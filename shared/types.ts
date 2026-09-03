@@ -134,6 +134,8 @@ export interface GameState {
   betPhase?: boolean;
   gameMode?: GameMode;
   spyId?: string;
+  /** Выбранные контент-паки комнаты (лобби). Нет ключа = builtin-пак режима. */
+  contentPacks?: Partial<Record<GameMode, string>>;
   /** Reward phase state (rpg-rewards mode only). */
   rewardPhase?: {
     rotation: string[];
@@ -200,6 +202,7 @@ export interface ClientEvents {
   'add-bot': () => void;
   'select-reward': (rewardId: string) => void;
   'set-game-mode': (mode: GameMode) => void;
+  'set-content-pack': (mode: GameMode, packId: string | null) => void;
 }
 
 export interface ServerEvents {

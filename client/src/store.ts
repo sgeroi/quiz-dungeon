@@ -42,6 +42,7 @@ interface StoreState {
   cheatWin: () => void;
   cheatSkip: () => void;
   setGameMode: (mode: GameMode) => void;
+  setContentPack: (mode: GameMode, packId: string | null) => void;
   leaveRoom: () => void;
 }
 
@@ -117,6 +118,7 @@ export const useStore = create<StoreState>((set, get) => ({
   cheatWin: () => { socket.emit('cheat-win'); },
   cheatSkip: () => { socket.emit('cheat-skip'); },
   setGameMode: (mode: GameMode) => { socket.emit('set-game-mode', mode); },
+  setContentPack: (mode: GameMode, packId: string | null) => { socket.emit('set-content-pack', mode, packId); },
 
   leaveRoom: () => {
     socket.emit('leave-room');

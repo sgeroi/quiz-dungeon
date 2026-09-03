@@ -8,6 +8,7 @@ import {
   type Movie,
   type CastMember,
 } from './movies.ts';
+import { getPetersburgData } from '../../data/contentStore.ts';
 
 // ---------- Mode-specific state shape ----------
 
@@ -21,6 +22,8 @@ interface PetersburgRoomData {
   /** All non-bot players in a stable order — used for captain rotation. */
   rotation: string[];
   rotationIndex: number;
+  /** All movies from the chosen content pack. */
+  pool: Movie[];
   /** Movies queued for the rounds. */
   queue: Movie[];
   /** Index of the current round (0-based). */
@@ -69,6 +72,7 @@ function getOrInitRoom(state: GameState): PetersburgRoomData {
     data = {
       rotation: [],
       rotationIndex: 0,
+      pool: MOVIES,
       queue: [],
       roundIndex: 0,
       round: 0,
@@ -280,10 +284,12 @@ const handler: ModeHandler = {
     data.rotationIndex = 0;
     data.captainId = ordered[0] ?? state.hostId;
 
-    data.queue = pickMovies(TOTAL_ROUNDS, new Set());
+    const packMovies = getPetersburgData(state.contentPacks?.petersburg).movies;
+    data.pool = packMovies.length > 0 ? packMovies : MOVIES;
+    data.queue = pickMovies(data.pool, TOTAL_ROUNDS, new Set());
     if (data.queue.length < TOTAL_ROUNDS) {
       while (data.queue.length < TOTAL_ROUNDS) {
-        data.queue.push(MOVIES[Math.floor(Math.random() * MOVIES.length)]);
+        data.queue.push(data.pool[Math.floor(Math.random() * data.pool.length)]);
       }
     }
 

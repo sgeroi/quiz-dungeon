@@ -1,7 +1,8 @@
 import type { Server } from 'socket.io';
 import type { GameState } from '../../../../shared/types.ts';
 import type { ModeHandler } from '../types.ts';
-import { pickQuestions, type SpeedQuestion } from './questions.ts';
+import { pickQuestions, toSpeedQuestions, type SpeedQuestion } from './questions.ts';
+import { getSimpleData } from '../../data/contentStore.ts';
 
 // ---------- Mode-specific state shape ----------
 
@@ -292,7 +293,8 @@ const handler: ModeHandler = {
     rooms.delete(state.roomCode);
     const data = getOrInitRoom(state.roomCode);
     data.round = 0;
-    data.questions = pickQuestions(TOTAL_QUESTIONS);
+    const pool = toSpeedQuestions(getSimpleData('speed', state.contentPacks?.speed).questions);
+    data.questions = pickQuestions(pool, TOTAL_QUESTIONS);
     data.scores = {};
     for (const pid of Object.keys(state.players)) {
       data.scores[pid] = 0;

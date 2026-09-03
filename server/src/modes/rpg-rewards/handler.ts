@@ -2,7 +2,8 @@ import type { Server } from 'socket.io';
 import type { GameState } from '../../../../shared/types.ts';
 import type { ModeHandler } from '../types.ts';
 import { startTimer, clearTimer } from '../../utils/TimerManager.ts';
-import { pickRpgrQuestions, type RpgrQuestion } from './questions.ts';
+import { pickRpgrQuestions, toRpgrQuestions, type RpgrQuestion } from './questions.ts';
+import { getSimpleData } from '../../data/contentStore.ts';
 import { RPGR_MONSTERS } from './monsters.ts';
 import { RPGR_CARDS, pickRandomCards, type RpgrCardId, type RpgrCardDef } from './cards.ts';
 
@@ -40,7 +41,7 @@ interface RpgrState {
   phase: 'fight' | 'reward' | 'results' | 'victory' | 'defeat';
   monsters: MonsterRuntime[];
   currentMonster: MonsterRuntime | null;
-  questions: RpgrQuestion[];
+  questions: RpgrQuestion[];      // full pool from the content pack (used to refill)
   questionPool: RpgrQuestion[];   // remaining
   currentQuestion: RpgrQuestion | null;
   currentAnswers: Record<string, number | null>;
@@ -181,7 +182,7 @@ function askQuestion(io: Server, state: GameState) {
   if (!s || !s.currentMonster) return;
   // Pick a fresh question
   if (s.questionPool.length === 0) {
-    s.questionPool = pickRpgrQuestions(35);
+    s.questionPool = pickRpgrQuestions(s.questions, 35);
   }
   const q = s.questionPool.shift()!;
   s.currentQuestion = q;
@@ -575,14 +576,16 @@ const handler: ModeHandler = {
       p.isAlive = true;
     }
 
+    const allQuestions = toRpgrQuestions(getSimpleData('rpg-rewards', state.contentPacks?.['rpg-rewards']).questions);
+
     const s: RpgrState = {
       round: 0,
       total: monsters.length,
       phase: 'fight',
       monsters,
       currentMonster: null,
-      questions: [],
-      questionPool: pickRpgrQuestions(35),
+      questions: allQuestions,
+      questionPool: pickRpgrQuestions(allQuestions, 35),
       currentQuestion: null,
       currentAnswers: {},
       answerTimes: {},

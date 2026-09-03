@@ -1,4 +1,5 @@
 // Spy mode questions. 4 options each. Russian. Mixed topics.
+import type { SimpleQuestion } from '../../../../shared/content.ts';
 
 export interface SpyQuestion {
   id: string;
@@ -130,8 +131,18 @@ export const SPY_QUESTIONS: SpyQuestion[] = [
   },
 ];
 
-export function pickSpyQuestions(count: number): SpyQuestion[] {
-  const pool = [...SPY_QUESTIONS];
+/** Convert content-pack questions into this mode's shape. */
+export function toSpyQuestions(pool: SimpleQuestion[]): SpyQuestion[] {
+  return pool.map(q => ({
+    id: q.id,
+    text: q.text,
+    options: [...q.options] as [string, string, string, string],
+    correctIndex: q.correctIndex,
+  }));
+}
+
+export function pickSpyQuestions(source: SpyQuestion[], count: number): SpyQuestion[] {
+  const pool = [...source];
   const out: SpyQuestion[] = [];
   while (out.length < count && pool.length > 0) {
     const idx = Math.floor(Math.random() * pool.length);

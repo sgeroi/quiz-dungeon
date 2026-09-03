@@ -1,5 +1,6 @@
 // Question pool for "Темы по группам" mode.
 // 10 questions per topic, all in Russian, 4 options each.
+import type { SimpleQuestionsData } from '../../../../shared/content.ts';
 
 export type TopicName = 'История' | 'Наука' | 'Кино' | 'Спорт';
 
@@ -274,9 +275,41 @@ export const TOPIC_QUESTIONS: Record<TopicName, TopicQuestion[]> = {
  * Pick a question for a topic excluding the IDs in `usedIds`.
  * If all questions are used, returns a random one (shouldn't happen with 8 rounds vs 10 questions).
  */
-export function pickTopicQuestion(topic: TopicName, usedIds: Set<string>): TopicQuestion {
-  const pool = TOPIC_QUESTIONS[topic];
+export function pickTopicQuestion(
+  pools: Record<string, TopicQuestion[]>,
+  topic: string,
+  usedIds: Set<string>,
+): TopicQuestion | null {
+  const pool = pools[topic] ?? [];
+  if (pool.length === 0) return null;
   const available = pool.filter((q) => !usedIds.has(q.id));
   const list = available.length > 0 ? available : pool;
   return list[Math.floor(Math.random() * list.length)];
+}
+
+/** Build per-topic pools from a content pack: topics = pack.topics, questions grouped by category. */
+export function buildTopicPools(data: SimpleQuestionsData): { topics: string[]; pools: Record<string, TopicQuestion[]> } {
+  const pools: Record<string, TopicQuestion[]> = {};
+  const topics = (data.topics ?? []).filter((t) => typeof t === 'string' && t.trim());
+  for (const t of topics) pools[t] = [];
+  for (const q of data.questions) {
+    const t = q.category ?? '';
+    if (!pools[t]) continue;
+    pools[t].push({
+      id: q.id,
+      text: q.text,
+      options: [...q.options] as [string, string, string, string],
+      correctIndex: q.correctIndex,
+    });
+  }
+  // Only keep topics that actually have questions; fall back to builtin if fewer than 2 remain.
+  const usable = topics.filter((t) => pools[t].length > 0);
+  if (usable.length < 2) {
+    const fallback: Record<string, TopicQuestion[]> = {};
+    for (const t of TOPICS) fallback[t] = TOPIC_QUESTIONS[t];
+    return { topics: [...TOPICS], pools: fallback };
+  }
+  const out: Record<string, TopicQuestion[]> = {};
+  for (const t of usable) out[t] = pools[t];
+  return { topics: usable, pools: out };
 }

@@ -5,9 +5,11 @@ import {
   MILLIONAIRE_QUESTIONS,
   PRIZE_PYRAMID,
   pickQuestion,
+  toMillionaireQuestions,
   difficultyForLevel,
   type MillionaireQuestion,
 } from './questions.ts';
+import { getSimpleData } from '../../data/contentStore.ts';
 
 // ---------- Mode-specific state shape ----------
 
@@ -65,6 +67,8 @@ interface MillionaireRoomData {
   audience: AudienceData | null;
   friend: FriendData | null;
   currentQuestion: MillionaireQuestion | null;
+  /** Question pool from the chosen content pack. */
+  pool: MillionaireQuestion[];
   used: Set<string>;
   timer: ReturnType<typeof setInterval> | null;
   resolveTimeout: ReturnType<typeof setTimeout> | null;
@@ -89,6 +93,7 @@ function getOrInitRoom(roomCode: string): MillionaireRoomData {
       audience: null,
       friend: null,
       currentQuestion: null,
+      pool: MILLIONAIRE_QUESTIONS,
       used: new Set(),
       timer: null,
       resolveTimeout: null,
@@ -157,7 +162,7 @@ function pushState(io: Server, state: GameState, data: MillionaireRoomData): voi
 function startQuestion(io: Server, state: GameState): void {
   const data = getOrInitRoom(state.roomCode);
   const difficulty = difficultyForLevel(data.level);
-  const question = pickQuestion(difficulty, data.used);
+  const question = pickQuestion(data.pool, difficulty, data.used);
   if (!question) {
     // No questions left — give them what they have
     finishGame(io, state, false);
@@ -407,7 +412,7 @@ function applySwap(io: Server, state: GameState): void {
   const oldId = data.currentQuestion.id;
   // Make sure the previous question is marked used so we don't roll the same.
   data.used.add(oldId);
-  const replacement = pickQuestion(difficulty, data.used);
+  const replacement = pickQuestion(data.pool, difficulty, data.used);
   if (!replacement) return; // no replacement available — keep current
 
   data.currentQuestion = replacement;
@@ -459,6 +464,7 @@ const handler: ModeHandler = {
     data.finalSum = 0;
     data.finalLevel = 0;
     data.used = new Set();
+    data.pool = toMillionaireQuestions(getSimpleData('millionaire', state.contentPacks?.millionaire).questions);
 
     state.phase = 'answering';
     state.currentFloor = 1;

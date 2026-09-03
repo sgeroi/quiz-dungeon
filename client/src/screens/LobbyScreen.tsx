@@ -1,19 +1,37 @@
+import { useEffect, useState } from 'react';
 import { useStore } from '../store';
 import { CLASS_LIST } from '../classData';
 import { GAME_MODES } from '../types';
 import type { PlayerClass, GameMode } from '../types';
+import type { ContentPackSummary } from '../content';
 import GameModeGrid from '../components/GameModeGrid';
 import QpHeader from '../components/QpHeader';
 
 export default function LobbyScreen() {
-  const { gameState, playerId, selectClass, setReady, startGame, addBot, setGameMode } = useStore();
+  const { gameState, playerId, selectClass, setReady, startGame, addBot, setGameMode, setContentPack } = useStore();
+  const currentMode: GameMode = gameState?.gameMode ?? 'classic';
+
+  // Content packs available for the selected mode (GET /api/content?mode=).
+  const [packs, setPacks] = useState<ContentPackSummary[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    setPacks([]);
+    fetch(`/api/content?mode=${encodeURIComponent(currentMode)}`)
+      .then((r) => (r.ok ? r.json() : []))
+      .then((list: ContentPackSummary[]) => { if (!cancelled) setPacks(Array.isArray(list) ? list : []); })
+      .catch(() => { if (!cancelled) setPacks([]); });
+    return () => { cancelled = true; };
+  }, [currentMode]);
+
   if (!gameState || !playerId) return null;
 
   const players = Object.values(gameState.players);
   const me = gameState.players[playerId];
   const allReady = players.length >= 2 && players.every((p) => p.isReady);
   const isHost = gameState.hostId === playerId;
-  const currentMode = gameState.gameMode ?? 'classic';
+  const builtinPackId = `builtin-${currentMode}`;
+  const selectedPackId = gameState.contentPacks?.[currentMode] ?? builtinPackId;
+  const selectedPack = packs.find((p) => p.id === selectedPackId) ?? packs.find((p) => p.id === builtinPackId);
   const currentModeInfo = GAME_MODES.find((m) => m.id === currentMode) ?? GAME_MODES[0];
   const needsClass = currentMode === 'classic';
   const canReady = needsClass ? !!me?.playerClass : true;
@@ -112,6 +130,33 @@ export default function LobbyScreen() {
               {currentModeInfo.emoji} {currentModeInfo.name}
             </div>
             <div className="text-sm text-[var(--color-dungeon-muted)] font-medium mt-0.5 leading-snug">{currentModeInfo.description}</div>
+          </div>
+
+          {/* Content pack picker */}
+          <div className="mt-3 rounded-2xl bg-white/5 px-4 py-3 flex flex-wrap items-center justify-between gap-3">
+            <div className="min-w-0">
+              <div className="text-xs font-bold uppercase tracking-wider text-[var(--color-dungeon-muted)]">Набор вопросов</div>
+              {!isHost && (
+                <div className="font-bold text-white mt-0.5 truncate">
+                  {selectedPack ? `${selectedPack.name} · ${selectedPack.itemCount}` : 'Стандартный набор'}
+                </div>
+              )}
+            </div>
+            {isHost && (
+              <select
+                value={selectedPackId}
+                onChange={(e) => setContentPack(currentMode, e.target.value === builtinPackId ? null : e.target.value)}
+                className="qp-input flex-1 min-w-[200px] py-2 px-3 text-sm font-semibold cursor-pointer"
+                aria-label="Набор вопросов"
+              >
+                {packs.length === 0 && <option value={selectedPackId}>Стандартный набор</option>}
+                {packs.map((p) => (
+                  <option key={p.id} value={p.id} className="bg-[var(--color-dungeon-surface)] text-white">
+                    {p.name} · {p.itemCount}
+                  </option>
+                ))}
+              </select>
+            )}
           </div>
         </div>
       </div>

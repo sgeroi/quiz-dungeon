@@ -1,4 +1,5 @@
 import type { GameState, Player, PlayerClass, GameMode } from '../../../shared/types.ts';
+import { getPack } from '../data/contentStore.ts';
 
 const rooms = new Map<string, GameState>();
 const playerToRoom = new Map<string, string>();
@@ -195,8 +196,25 @@ export function setGameMode(socketId: string, mode: GameMode): GameState | null 
   if (state.phase !== 'lobby') return null;
   if (state.gameMode === mode) return state;
   state.gameMode = mode;
-  // New game — everyone confirms readiness again.
-  for (const p of Object.values(state.players)) p.isReady = false;
+  // New game — everyone confirms readiness again (bots are always ready).
+  for (const p of Object.values(state.players)) p.isReady = !!p.isBot;
+  return state;
+}
+
+/** Host-only, lobby-only: choose a content pack for a mode. null = builtin. */
+export function setContentPack(socketId: string, mode: GameMode, packId: string | null): GameState | null {
+  const state = getRoomByPlayer(socketId);
+  if (!state) return null;
+  if (state.hostId !== socketId) return null;
+  if (state.phase !== 'lobby') return null;
+  if (!state.contentPacks) state.contentPacks = {};
+  if (!packId) {
+    delete state.contentPacks[mode];
+    return state;
+  }
+  const pack = getPack(packId);
+  if (!pack || pack.mode !== mode) return null;
+  state.contentPacks[mode] = packId;
   return state;
 }
 

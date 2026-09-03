@@ -3,11 +3,11 @@ import type { GameState } from '../../../../shared/types.ts';
 import type { ModeHandler } from '../types.ts';
 import { startTimer, clearTimer } from '../../utils/TimerManager.ts';
 import {
-  TOPICS,
   pickTopicQuestion,
-  type TopicName,
+  buildTopicPools,
   type TopicQuestion,
 } from './questions.ts';
+import { getSimpleData } from '../../data/contentStore.ts';
 
 // ---------- Tunables ----------
 
@@ -34,9 +34,9 @@ interface BossSnapshot {
 
 interface PublicSnapshot {
   phase: 'pick' | 'question' | 'results' | 'finished';
-  topics: TopicName[];
+  topics: string[];
   /** playerId -> topic chosen */
-  assignments: Record<string, TopicName>;
+  assignments: Record<string, string>;
   round: number;
   total: number;
   boss: BossSnapshot;
@@ -58,27 +58,33 @@ interface PublicSnapshot {
 
 interface RoomData {
   phase: 'pick' | 'question' | 'results' | 'finished';
-  assignments: Map<string, TopicName>;          // playerId -> topic
+  /** Topics from the content pack (>= 2). */
+  topics: string[];
+  /** Per-topic question pools from the content pack. */
+  pools: Record<string, TopicQuestion[]>;
+  assignments: Map<string, string>;          // playerId -> topic
   round: number;                                 // 0-based; UI shows round+1
-  scores: Map<TopicName, number>;
+  scores: Map<string, number>;
   bossHp: number;
   bossMax: number;
   /** Active per-topic question (server-side, includes correctIndex). */
-  activeQuestions: Map<TopicName, TopicQuestion>;
-  usedQuestionIds: Map<TopicName, Set<string>>;
+  activeQuestions: Map<string, TopicQuestion>;
+  usedQuestionIds: Map<string, Set<string>>;
   /** playerId -> optionIdx for current round. */
   votes: Map<string, number>;
   /** topic -> majority chosen index for last round (for results display). */
-  lastChoice: Map<TopicName, number>;
-  lastCorrect: Map<TopicName, number>;
-  lastResult: Map<TopicName, boolean>;
+  lastChoice: Map<string, number>;
+  lastCorrect: Map<string, number>;
+  lastResult: Map<string, boolean>;
 }
 
 const ROOMS = new Map<string, RoomData>();
 
-function freshRoom(): RoomData {
+function freshRoom(topics: string[], pools: Record<string, TopicQuestion[]>): RoomData {
   return {
     phase: 'pick',
+    topics,
+    pools,
     assignments: new Map(),
     round: 0,
     scores: new Map(),
@@ -93,13 +99,13 @@ function freshRoom(): RoomData {
   };
 }
 
-function activeTopics(data: RoomData): TopicName[] {
-  const set = new Set<TopicName>();
+function activeTopics(data: RoomData): string[] {
+  const set = new Set<string>();
   for (const t of data.assignments.values()) set.add(t);
-  return TOPICS.filter((t) => set.has(t));
+  return data.topics.filter((t) => set.has(t));
 }
 
-function playersInTopic(data: RoomData, topic: TopicName): string[] {
+function playersInTopic(data: RoomData, topic: string): string[] {
   const ids: string[] = [];
   for (const [pid, t] of data.assignments) {
     if (t === topic) ids.push(pid);
@@ -112,11 +118,11 @@ function publicQuestion(q: TopicQuestion): PublicQuestion {
 }
 
 function buildSnapshot(data: RoomData): PublicSnapshot {
-  const assignments: Record<string, TopicName> = {};
+  const assignments: Record<string, string> = {};
   for (const [pid, t] of data.assignments) assignments[pid] = t;
 
   const scores: Record<string, number> = {};
-  for (const t of TOPICS) scores[t] = data.scores.get(t) ?? 0;
+  for (const t of data.topics) scores[t] = data.scores.get(t) ?? 0;
 
   const currentQuestions: Record<string, PublicQuestion> = {};
   if (data.phase === 'question' || data.phase === 'results') {
@@ -137,7 +143,7 @@ function buildSnapshot(data: RoomData): PublicSnapshot {
 
   return {
     phase: data.phase,
-    topics: [...TOPICS],
+    topics: [...data.topics],
     assignments,
     round: data.round,
     total: TOTAL_ROUNDS,
@@ -172,7 +178,7 @@ function startPickPhase(io: Server, state: GameState): void {
   const bots = Object.values(state.players).filter((p) => p.isBot);
   for (const b of bots) {
     if (!data.assignments.has(b.id)) {
-      const topic = TOPICS[Math.floor(Math.random() * TOPICS.length)];
+      const topic = data.topics[Math.floor(Math.random() * data.topics.length)];
       data.assignments.set(b.id, topic);
     }
   }
@@ -198,7 +204,7 @@ function finalizePicks(io: Server, state: GameState): void {
   // Anyone who didn't pick — assign them randomly.
   for (const p of Object.values(state.players)) {
     if (!data.assignments.has(p.id)) {
-      const topic = TOPICS[Math.floor(Math.random() * TOPICS.length)];
+      const topic = data.topics[Math.floor(Math.random() * data.topics.length)];
       data.assignments.set(p.id, topic);
     }
   }
@@ -207,7 +213,7 @@ function finalizePicks(io: Server, state: GameState): void {
   const max = TOTAL_ROUNDS * Math.max(playerCount, 1) * BOSS_HP_PER_ROUND_PER_PLAYER;
   data.bossHp = max;
   data.bossMax = max;
-  for (const t of TOPICS) data.scores.set(t, 0);
+  for (const t of data.topics) data.scores.set(t, 0);
 
   data.round = 0;
   startRound(io, state);
@@ -235,7 +241,8 @@ function startRound(io: Server, state: GameState): void {
   for (const t of topics) {
     if (!data.usedQuestionIds.has(t)) data.usedQuestionIds.set(t, new Set());
     const used = data.usedQuestionIds.get(t)!;
-    const q = pickTopicQuestion(t, used);
+    const q = pickTopicQuestion(data.pools, t, used);
+    if (!q) continue;
     used.add(q.id);
     data.activeQuestions.set(t, q);
   }
@@ -322,7 +329,7 @@ export function submitVote(
 
 function majorityChoice(
   data: RoomData,
-  topic: TopicName,
+  topic: string,
 ): number | null {
   const counts: Record<number, number> = {};
   for (const pid of playersInTopic(data, topic)) {
@@ -427,7 +434,7 @@ function finishGame(io: Server, state: GameState): void {
   pushState(io, state, data);
 
   const scores: Record<string, number> = {};
-  for (const t of TOPICS) scores[t] = data.scores.get(t) ?? 0;
+  for (const t of data.topics) scores[t] = data.scores.get(t) ?? 0;
 
   io.to(state.roomCode).emit('game-over', victory, {
     mode: 'topic-split',
@@ -439,11 +446,11 @@ function finishGame(io: Server, state: GameState): void {
 
 // ---------- Pick handler ----------
 
-function handlePick(io: Server, state: GameState, playerId: string, topic: TopicName): void {
+function handlePick(io: Server, state: GameState, playerId: string, topic: string): void {
   const data = ROOMS.get(state.roomCode);
   if (!data || data.phase !== 'pick') return;
   if (!(playerId in state.players)) return;
-  if (!TOPICS.includes(topic)) return;
+  if (typeof topic !== 'string' || !data.topics.includes(topic)) return;
   data.assignments.set(playerId, topic);
   pushState(io, state, data);
 }
@@ -454,7 +461,8 @@ const handler: ModeHandler = {
   start(io, state) {
     clearTimer(state.roomCode);
     ROOMS.delete(state.roomCode);
-    const data = freshRoom();
+    const { topics, pools } = buildTopicPools(getSimpleData('topic-split', state.contentPacks?.['topic-split']));
+    const data = freshRoom(topics, pools);
     ROOMS.set(state.roomCode, data);
 
     // Reset per-player fields used by the team-damage effect.
@@ -473,7 +481,7 @@ const handler: ModeHandler = {
   },
 
   registerSocket(io, socket, getState) {
-    socket.on('mode-topic-pick', (topic: TopicName) => {
+    socket.on('mode-topic-pick', (topic: string) => {
       const state = getState();
       if (!state || state.gameMode !== 'topic-split') return;
       handlePick(io, state, socket.id, topic);

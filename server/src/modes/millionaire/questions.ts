@@ -1,5 +1,6 @@
 // Question pool for "Кто хочет стать миллионером" mode.
 // 30+ questions in Russian, distributed by difficulty.
+import type { SimpleQuestion } from '../../../../shared/content.ts';
 
 export interface MillionaireQuestion {
   id: string;
@@ -248,14 +249,29 @@ export const MILLIONAIRE_QUESTIONS: MillionaireQuestion[] = [
   },
 ];
 
+/** Convert content-pack questions into this mode's shape (difficulty defaults to medium). */
+export function toMillionaireQuestions(pool: SimpleQuestion[]): MillionaireQuestion[] {
+  return pool.map(q => ({
+    id: q.id,
+    text: q.text,
+    options: [...q.options] as [string, string, string, string],
+    correctIndex: q.correctIndex,
+    difficulty: q.difficulty ?? 'medium',
+  }));
+}
+
 export function pickQuestion(
+  all: MillionaireQuestion[],
   difficulty: 'easy' | 'medium' | 'hard',
   used: Set<string>,
 ): MillionaireQuestion | null {
-  let pool = MILLIONAIRE_QUESTIONS.filter(q => q.difficulty === difficulty && !used.has(q.id));
+  let pool = all.filter(q => q.difficulty === difficulty && !used.has(q.id));
   if (pool.length === 0) {
-    pool = MILLIONAIRE_QUESTIONS.filter(q => q.difficulty === difficulty);
+    pool = all.filter(q => q.difficulty === difficulty);
   }
+  // Pack may have no questions of this difficulty — fall back to any unused, then any.
+  if (pool.length === 0) pool = all.filter(q => !used.has(q.id));
+  if (pool.length === 0) pool = all;
   if (pool.length === 0) return null;
   const q = pool[Math.floor(Math.random() * pool.length)];
   used.add(q.id);

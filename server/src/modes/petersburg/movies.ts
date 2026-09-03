@@ -477,9 +477,9 @@ export function answerMatches(text: string, movie: Movie): boolean {
   return false;
 }
 
-export function pickMovies(count: number, exclude: Set<string>): Movie[] {
-  const pool = MOVIES.filter(m => !exclude.has(m.id));
-  const list = pool.length >= count ? pool : MOVIES.slice();
+export function pickMovies(source: Movie[], count: number, exclude: Set<string>): Movie[] {
+  const pool = source.filter(m => !exclude.has(m.id));
+  const list = pool.length >= count ? pool : source.slice();
   for (let i = list.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
     [list[i], list[j]] = [list[j], list[i]];

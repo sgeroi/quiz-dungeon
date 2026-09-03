@@ -2,7 +2,8 @@ import type { Server } from 'socket.io';
 import type { GameState } from '../../../../shared/types.ts';
 import type { ModeHandler } from '../types.ts';
 import { startTimer, clearTimer } from '../../utils/TimerManager.ts';
-import { pickSpyQuestions, type SpyQuestion } from './questions.ts';
+import { pickSpyQuestions, toSpyQuestions, type SpyQuestion } from './questions.ts';
+import { getSimpleData } from '../../data/contentStore.ts';
 
 const TOTAL_ROUNDS = 8;
 const QUESTION_TIME = 20;
@@ -464,14 +465,18 @@ const handler: ModeHandler = {
     state.spyId = spyId;
     (state as any).spy = { teamScore: 0, spyScore: 0, spyId, votes: {} };
 
+    const pool = toSpyQuestions(getSimpleData('spy', state.contentPacks?.spy).questions);
+    const questions = pickSpyQuestions(pool, TOTAL_ROUNDS);
+    const totalRounds = Math.max(1, Math.min(TOTAL_ROUNDS, questions.length));
+
     const spyState: SpyState = {
       spyId,
       teamScore: 0,
       spyScore: 0,
       round: 0,
-      totalRounds: TOTAL_ROUNDS,
+      totalRounds,
       phase: 'role-reveal',
-      questions: pickSpyQuestions(TOTAL_ROUNDS),
+      questions,
       currentQuestion: null,
       answers: {},
       votes: {},
@@ -489,7 +494,7 @@ const handler: ModeHandler = {
 
     state.phase = 'floor-intro';
     state.currentFloor = 0;
-    state.totalFloors = TOTAL_ROUNDS;
+    state.totalFloors = totalRounds;
     state.lastResults = null;
     broadcastState(io, state);
 

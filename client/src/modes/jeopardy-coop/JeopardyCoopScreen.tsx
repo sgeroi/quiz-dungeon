@@ -5,12 +5,8 @@ import type { Player } from '../../types';
 
 // ---- Types mirroring the server snapshot ----
 
-type JCoopTopic =
-  | 'Древний мир'
-  | 'Российская история'
-  | 'Природа'
-  | 'Литература'
-  | 'Технологии';
+// Topics come from the content pack chosen in the lobby — any string.
+type JCoopTopic = string;
 
 type JCoopValue = 100 | 200 | 300 | 400 | 500;
 
@@ -67,13 +63,6 @@ interface JCoopSnapshot {
   };
 }
 
-const TOPICS: JCoopTopic[] = [
-  'Древний мир',
-  'Российская история',
-  'Природа',
-  'Литература',
-  'Технологии',
-];
 const VALUES: JCoopValue[] = [100, 200, 300, 400, 500];
 
 interface LevelInfo {
@@ -416,9 +405,14 @@ function JeopardyGrid({
   onPick: (topic: JCoopTopic, value: JCoopValue) => void;
   revealKey: string | null;
 }) {
+  // Topic order = server grid order (topic-major), so first-seen order is stable.
+  const TOPICS: JCoopTopic[] = [];
+  for (const c of cells.values()) {
+    if (!TOPICS.includes(c.topic)) TOPICS.push(c.topic);
+  }
   return (
     <div className="glass-panel rounded-2xl p-3 md:p-4 border border-purple-500/20">
-      <div className="grid grid-cols-5 gap-1.5 md:gap-2">
+      <div className="grid gap-1.5 md:gap-2" style={{ gridTemplateColumns: `repeat(${Math.max(TOPICS.length, 1)}, minmax(0, 1fr))` }}>
         {TOPICS.map((t) => (
           <div
             key={t}

@@ -2,6 +2,15 @@ import type { Server, Socket } from 'socket.io';
 import type { GameState, Player } from '../../../../shared/types.ts';
 import type { ModeHandler } from '../types.ts';
 import { BUCKET_SETS, type BucketSet } from './sets.ts';
+import { getBucketsData } from '../../data/contentStore.ts';
+
+// Sets from the chosen content pack, per room.
+const setsByRoom = new Map<string, BucketSet[]>();
+
+function getSets(roomCode: string): BucketSet[] {
+  const sets = setsByRoom.get(roomCode);
+  return sets && sets.length > 0 ? sets : BUCKET_SETS;
+}
 
 const TOTAL_ROUNDS = 5;
 const ROUND_TIME = 60; // seconds
@@ -91,10 +100,10 @@ function buildPublicSet(set: BucketSet, shuffledItems: { text: string }[]): Publ
   };
 }
 
-function pickSetIndex(round: number): number {
+function pickSetIndex(round: number, setCount: number): number {
   // Deterministic, but offset randomly per game start.
-  const offset = Math.floor(Math.random() * BUCKET_SETS.length);
-  return (round - 1 + offset) % BUCKET_SETS.length;
+  const offset = Math.floor(Math.random() * setCount);
+  return (round - 1 + offset) % setCount;
 }
 
 // =============== Round lifecycle ===============
@@ -110,8 +119,9 @@ function startRound(io: Server, state: GameState): void {
   }
 
   // Choose a set; shuffle items so order differs per round.
-  const setIndex = pickSetIndex(bs.round);
-  const original = BUCKET_SETS[setIndex];
+  const sets = getSets(state.roomCode);
+  const setIndex = pickSetIndex(bs.round, sets.length);
+  const original = sets[setIndex];
 
   // Build a shuffled item array, but we need the answer key indexed identically.
   const indexed = original.items.map((it, i) => ({ ...it, originalIdx: i }));
@@ -333,6 +343,7 @@ function scheduleBotAnswers(io: Server, state: GameState): void {
 const handler: ModeHandler = {
   start(io, state) {
     clearAllTimers(state.roomCode);
+    setsByRoom.set(state.roomCode, getBucketsData(state.contentPacks?.buckets).sets);
 
     const playerCount = Object.keys(state.players).length;
     const aliveCount = Math.max(1, playerCount);
@@ -382,7 +393,7 @@ const handler: ModeHandler = {
 
       const { itemIdx, bucketIdx } = payload ?? ({} as any);
       if (typeof itemIdx !== 'number' || typeof bucketIdx !== 'number') return;
-      if (itemIdx < 0 || itemIdx >= ITEMS_PER_ROUND) return;
+      if (itemIdx < 0 || itemIdx >= Math.max(ITEMS_PER_ROUND, bs.publicSet.items.length)) return;
       if (bucketIdx < -1 || bucketIdx > 3) return;
 
       bs.submissions[socket.id] = bs.submissions[socket.id] ?? {};
@@ -424,6 +435,7 @@ const handler: ModeHandler = {
 
   stop(_io, state) {
     clearAllTimers(state.roomCode);
+    setsByRoom.delete(state.roomCode);
     delete (state as any).buckets;
   },
 };

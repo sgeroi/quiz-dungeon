@@ -1,7 +1,15 @@
 import type { Server, Socket } from 'socket.io';
 import type { GameState } from '../../../../shared/types.ts';
 import type { ModeHandler } from '../types.ts';
-import { JEOPARDY_GRID, type JeopardyCell } from './grid.ts';
+import { JEOPARDY_GRID, type JeopardyCell, type JeopardyGrid } from './grid.ts';
+import { getJeopardyData } from '../../data/contentStore.ts';
+
+// Full grid (with answers) per room, taken from the chosen content pack at start.
+const gridByRoom = new Map<string, JeopardyGrid>();
+
+function getGrid(roomCode: string): JeopardyGrid {
+  return gridByRoom.get(roomCode) ?? JEOPARDY_GRID;
+}
 
 // ==================== TYPES ====================
 
@@ -116,7 +124,9 @@ function clearAllTimers(roomCode: string): void {
 // ==================== GAME FLOW ====================
 
 function startGame(io: Server, state: GameState): void {
-  const grid = JEOPARDY_GRID;
+  const packData = getJeopardyData('jeopardy-comp', state.contentPacks?.['jeopardy-comp']);
+  const grid: JeopardyGrid = { topics: [...packData.topics], cells: packData.cells };
+  gridByRoom.set(state.roomCode, grid);
   const publicGrid = {
     topics: grid.topics,
     cells: Object.fromEntries(
@@ -215,8 +225,10 @@ function pickCell(io: Server, state: GameState, socketId: string, topicIdx: numb
   const key = cellKey(topicIdx, valueIdx);
   if (j.played.includes(key)) return;
 
-  const topic = JEOPARDY_GRID.topics[topicIdx];
-  const cell: JeopardyCell = JEOPARDY_GRID.cells[topic][valueIdx];
+  const grid = getGrid(state.roomCode);
+  const topic = grid.topics[topicIdx];
+  const cell: JeopardyCell | undefined = grid.cells[topic]?.[valueIdx];
+  if (!cell) return;
 
   const open: OpenCell = {
     topicIdx,
@@ -457,6 +469,7 @@ const handler: ModeHandler = {
   stop(_io, state) {
     clearAllTimers(state.roomCode);
     roomTimers.delete(state.roomCode);
+    gridByRoom.delete(state.roomCode);
   },
 };
 

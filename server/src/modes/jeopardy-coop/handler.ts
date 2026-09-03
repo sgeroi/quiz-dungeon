@@ -5,9 +5,35 @@ import {
   JCOOP_GRID,
   JCOOP_TOPICS,
   JCOOP_VALUES,
-  type JCoopTopic,
+  type JCoopQuestion,
   type JCoopValue,
 } from './grid.ts';
+import { getJeopardyData } from '../../data/contentStore.ts';
+import type { JeopardyData } from '../../../../shared/content.ts';
+
+/** Topic name — any string (topics come from the content pack). */
+type JCoopTopic = string;
+
+/** Convert pack data (topic -> 5 cells sorted by value) into the Record<topic, Record<value, q>> the handler uses. */
+function packToCoopGrid(data: JeopardyData): { topics: JCoopTopic[]; questions: Record<JCoopTopic, Record<JCoopValue, JCoopQuestion>> } {
+  const topics: JCoopTopic[] = [];
+  const questions: Record<JCoopTopic, Record<JCoopValue, JCoopQuestion>> = {};
+  for (const topic of data.topics) {
+    const cells = [...(data.cells[topic] ?? [])].sort((a, b) => a.value - b.value);
+    if (cells.length < JCOOP_VALUES.length) continue;
+    const byValue = {} as Record<JCoopValue, JCoopQuestion>;
+    JCOOP_VALUES.forEach((value, i) => {
+      const c = cells[i];
+      byValue[value] = { text: c.text, options: [...c.options] as [string, string, string, string], correctIndex: c.correctIndex };
+    });
+    topics.push(topic);
+    questions[topic] = byValue;
+  }
+  if (topics.length === 0) {
+    return { topics: [...JCOOP_TOPICS], questions: JCOOP_GRID as Record<JCoopTopic, Record<JCoopValue, JCoopQuestion>> };
+  }
+  return { topics, questions };
+}
 
 // =====================================================================
 // Mode-specific state
@@ -101,6 +127,10 @@ interface JCoopSnapshot {
 
 interface JCoopRoomData {
   boss: JCoopBoss;
+  /** Topics from the content pack, in display order. */
+  topics: JCoopTopic[];
+  /** Questions from the content pack: topic -> value -> question. */
+  questions: Record<JCoopTopic, Record<JCoopValue, JCoopQuestion>>;
   grid: Map<string, { topic: JCoopTopic; value: JCoopValue; played: boolean }>;
   /** Stable rotation order of human players. */
   rotation: string[];
@@ -201,7 +231,7 @@ function pushAnimation(data: JCoopRoomData, anim: Omit<JCoopAnimation, 'id'>): v
 
 function buildPublicGrid(data: JCoopRoomData): JCoopCellPublic[] {
   const out: JCoopCellPublic[] = [];
-  for (const topic of JCOOP_TOPICS) {
+  for (const topic of data.topics) {
     for (const value of JCOOP_VALUES) {
       const cell = data.grid.get(cellKey(topic, value));
       out.push({
@@ -242,7 +272,7 @@ function buildSnapshot(data: JCoopRoomData): JCoopSnapshot {
         }
       : null,
     reveal: data.reveal,
-    totalCells: 25,
+    totalCells: data.topics.length * JCOOP_VALUES.length,
     playedCount: playedKeys.length,
     animations: [...data.animations],
     result: data.result,
@@ -283,8 +313,9 @@ function pushState(io: Server, state: GameState, data: JCoopRoomData): void {
 
 function initRoom(state: GameState): JCoopRoomData {
   rooms.delete(state.roomCode);
+  const { topics, questions } = packToCoopGrid(getJeopardyData('jeopardy-coop', state.contentPacks?.['jeopardy-coop']));
   const grid = new Map<string, { topic: JCoopTopic; value: JCoopValue; played: boolean }>();
-  for (const topic of JCOOP_TOPICS) {
+  for (const topic of topics) {
     for (const value of JCOOP_VALUES) {
       grid.set(cellKey(topic, value), { topic, value, played: false });
     }
@@ -301,6 +332,8 @@ function initRoom(state: GameState): JCoopRoomData {
 
   const data: JCoopRoomData = {
     boss: { name: BOSS_NAME, emoji: BOSS_EMOJI, hp: BOSS_MAX_HP, max: BOSS_MAX_HP },
+    topics,
+    questions,
     grid,
     rotation,
     turnIndex: 0,
@@ -410,7 +443,7 @@ function pickCell(io: Server, state: GameState, topic: JCoopTopic, value: JCoopV
 
   const cell = data.grid.get(cellKey(topic, value));
   if (!cell || cell.played) return;
-  const q = JCOOP_GRID[topic]?.[value];
+  const q = data.questions[topic]?.[value];
   if (!q) return;
 
   cell.played = true;
@@ -623,7 +656,7 @@ const handler: ModeHandler = {
     // Initial top-level mirrors.
     state.captainId = data.rotation[0] ?? undefined;
     state.sacrificePlayerId = undefined;
-    state.totalFloors = 25;
+    state.totalFloors = data.topics.length * JCOOP_VALUES.length;
     state.currentFloor = 0;
 
     // Make sure all players start with the standard HP value (engine default
@@ -650,7 +683,7 @@ const handler: ModeHandler = {
       const activeId = data.rotation[data.turnIndex % data.rotation.length];
       if (socket.id !== activeId) return;
       if (!payload || typeof payload.topic !== 'string' || typeof payload.value !== 'number') return;
-      if (!JCOOP_TOPICS.includes(payload.topic)) return;
+      if (!data.topics.includes(payload.topic)) return;
       if (!JCOOP_VALUES.includes(payload.value)) return;
       pickCell(io, state, payload.topic, payload.value);
     });

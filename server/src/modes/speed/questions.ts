@@ -1,5 +1,6 @@
 // Question pool for "На скорость / Баззер" mode.
 // 30+ questions in Russian, varied topics, 4 options each.
+import type { SimpleQuestion } from '../../../../shared/content.ts';
 
 export interface SpeedQuestion {
   id: string;
@@ -272,9 +273,20 @@ export const SPEED_QUESTIONS: SpeedQuestion[] = [
   },
 ];
 
-/** Pick N unique random questions for a game. */
-export function pickQuestions(count: number): SpeedQuestion[] {
-  const pool = [...SPEED_QUESTIONS];
+/** Convert content-pack questions into this mode's shape. */
+export function toSpeedQuestions(pool: SimpleQuestion[]): SpeedQuestion[] {
+  return pool.map(q => ({
+    id: q.id,
+    text: q.text,
+    options: [...q.options] as [string, string, string, string],
+    correctIndex: q.correctIndex,
+    category: q.category ?? '',
+  }));
+}
+
+/** Pick N unique random questions for a game from the given pool. */
+export function pickQuestions(source: SpeedQuestion[], count: number): SpeedQuestion[] {
+  const pool = [...source];
   const out: SpeedQuestion[] = [];
   for (let i = 0; i < count && pool.length > 0; i++) {
     const idx = Math.floor(Math.random() * pool.length);

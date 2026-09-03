@@ -4,6 +4,8 @@ import { generateFloors } from './FloorGenerator.ts';
 import { MODE_HANDLERS } from '../modes/index.ts';
 import { startTimer, clearTimer } from '../utils/TimerManager.ts';
 import { QUESTIONS } from '../data/questions.ts';
+import { getSimpleData } from '../data/contentStore.ts';
+import type { SimpleQuestionsData } from '../../../shared/content.ts';
 import {
   PERKS,
   PERK_BY_ID,
@@ -18,16 +20,34 @@ import {
 } from './Perks.ts';
 
 const usedQuestions = new Map<string, Set<string>>();
+// Per-room question pool taken from the chosen content pack at game start.
+const roomPools = new Map<string, Question[]>();
 
 function getUsedSet(roomCode: string): Set<string> {
   if (!usedQuestions.has(roomCode)) usedQuestions.set(roomCode, new Set());
   return usedQuestions.get(roomCode)!;
 }
 
+/** Convert pack questions to the engine's Question shape (category/difficulty defaults). */
+function packToQuestions(data: SimpleQuestionsData): Question[] {
+  return data.questions.map(q => ({
+    id: q.id,
+    text: q.text,
+    options: [...q.options],
+    correctIndex: q.correctIndex,
+    category: q.category ?? 'Общее',
+    difficulty: q.difficulty ?? 'medium',
+  }));
+}
+
 function pickQuestion(difficulty: 'easy' | 'medium' | 'hard', roomCode: string): Question | null {
   const used = getUsedSet(roomCode);
-  let pool = QUESTIONS.filter(q => q.difficulty === difficulty && !used.has(q.id));
-  if (pool.length === 0) pool = QUESTIONS.filter(q => q.difficulty === difficulty);
+  const all = roomPools.get(roomCode) ?? QUESTIONS;
+  let pool = all.filter(q => q.difficulty === difficulty && !used.has(q.id));
+  if (pool.length === 0) pool = all.filter(q => q.difficulty === difficulty);
+  // Pack may lack this difficulty entirely — fall back to any unused, then any.
+  if (pool.length === 0) pool = all.filter(q => !used.has(q.id));
+  if (pool.length === 0) pool = all;
   if (pool.length === 0) return null;
   const q = pool[Math.floor(Math.random() * pool.length)];
   used.add(q.id);
@@ -129,6 +149,7 @@ export function startGame(io: Server, roomCode: string, state: GameState, config
   }
 
   usedQuestions.set(roomCode, new Set());
+  roomPools.set(roomCode, packToQuestions(getSimpleData(mode, state.contentPacks?.[mode])));
   io.to(roomCode).emit('game-state', state);
   nextFloor(io, state);
 }
@@ -756,6 +777,7 @@ export function submitRewardPick(io: Server, state: GameState, playerId: string,
 
 function cleanup(roomCode: string) {
   usedQuestions.delete(roomCode);
+  roomPools.delete(roomCode);
   clearTimer(roomCode);
 }
 

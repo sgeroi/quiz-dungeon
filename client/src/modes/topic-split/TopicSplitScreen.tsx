@@ -4,7 +4,8 @@ import { socket } from '../../socket';
 
 // ---------- Types mirroring the server snapshot ----------
 
-type TopicName = 'История' | 'Наука' | 'Кино' | 'Спорт';
+// Topics come from the content pack, so any string is a valid topic name.
+type TopicName = string;
 
 interface PublicQuestion {
   id: string;
@@ -32,19 +33,39 @@ interface TopicSplitSnapshot {
   lastResult: Record<string, boolean>;
 }
 
-const TOPIC_EMOJI: Record<TopicName, string> = {
+const KNOWN_TOPIC_EMOJI: Record<string, string> = {
   'История': '📚',
   'Наука': '🧪',
   'Кино': '🎬',
   'Спорт': '⚽',
+  'География': '🌍',
+  'Музыка': '🎵',
+  'Литература': '📖',
+  'Технологии': '💻',
+  'Природа': '🌿',
+  'Искусство': '🎨',
 };
+const DEFAULT_TOPIC_EMOJI = '📌';
 
-const TOPIC_GRADIENT: Record<TopicName, string> = {
-  'История': 'from-amber-500/30 to-orange-600/20 border-amber-400/40',
-  'Наука': 'from-emerald-500/30 to-teal-600/20 border-emerald-400/40',
-  'Кино': 'from-rose-500/30 to-fuchsia-600/20 border-rose-400/40',
-  'Спорт': 'from-sky-500/30 to-indigo-600/20 border-sky-400/40',
-};
+const TOPIC_GRADIENTS = [
+  'from-amber-500/30 to-orange-600/20 border-amber-400/40',
+  'from-emerald-500/30 to-teal-600/20 border-emerald-400/40',
+  'from-rose-500/30 to-fuchsia-600/20 border-rose-400/40',
+  'from-sky-500/30 to-indigo-600/20 border-sky-400/40',
+  'from-violet-500/30 to-purple-600/20 border-violet-400/40',
+  'from-lime-500/30 to-green-600/20 border-lime-400/40',
+];
+
+/** Emoji for a topic: known names get a themed one, everything else the default pin. */
+const TOPIC_EMOJI: Record<TopicName, string> = new Proxy(KNOWN_TOPIC_EMOJI, {
+  get: (target, key) => (typeof key === 'string' && target[key]) || DEFAULT_TOPIC_EMOJI,
+});
+
+/** Gradient by topic position in the pack's topic list (stable per game). */
+function topicGradient(topics: TopicName[], t: TopicName): string {
+  const idx = Math.max(0, topics.indexOf(t));
+  return TOPIC_GRADIENTS[idx % TOPIC_GRADIENTS.length];
+}
 
 const LETTERS = ['A', 'B', 'C', 'D'];
 
@@ -181,7 +202,7 @@ function PickPhase({
               <button
                 key={t}
                 onClick={() => pick(t)}
-                className={`glass-panel rounded-2xl p-6 text-left transition-all border bg-gradient-to-br ${TOPIC_GRADIENT[t]} ${
+                className={`glass-panel rounded-2xl p-6 text-left transition-all border bg-gradient-to-br ${topicGradient(ts.topics, t)} ${
                   isMine ? 'ring-2 ring-white/60 scale-[1.01]' : 'hover:scale-[1.01] hover:ring-1 hover:ring-white/30'
                 }`}
               >
@@ -308,7 +329,7 @@ function GamePhase({
             {activeTopics.map((t) => (
               <div
                 key={t}
-                className={`rounded-lg border bg-gradient-to-br ${TOPIC_GRADIENT[t]} px-3 py-2 ${
+                className={`rounded-lg border bg-gradient-to-br ${topicGradient(ts.topics, t)} px-3 py-2 ${
                   t === myTopic ? 'ring-2 ring-white/40' : ''
                 }`}
               >
@@ -349,7 +370,7 @@ function GamePhase({
 
         {/* Question card */}
         {myTopic && question ? (
-          <div className={`glass-panel rounded-2xl p-5 md:p-6 border bg-gradient-to-br ${TOPIC_GRADIENT[myTopic]}`}>
+          <div className={`glass-panel rounded-2xl p-5 md:p-6 border bg-gradient-to-br ${topicGradient(ts.topics, myTopic)}`}>
             <div className="flex items-center gap-2 mb-3 text-sm font-bold text-white/90">
               <span className="text-2xl">{TOPIC_EMOJI[myTopic]}</span>
               <span>Тема: {myTopic}</span>
@@ -467,7 +488,7 @@ function FinishedScreen({ ts }: { ts: TopicSplitSnapshot }) {
           {activeTopics.map((t) => (
             <div
               key={t}
-              className={`rounded-lg border bg-gradient-to-br ${TOPIC_GRADIENT[t]} px-3 py-2 flex items-center justify-between`}
+              className={`rounded-lg border bg-gradient-to-br ${topicGradient(ts.topics, t)} px-3 py-2 flex items-center justify-between`}
             >
               <span className="font-bold text-white">
                 {TOPIC_EMOJI[t]} {t}

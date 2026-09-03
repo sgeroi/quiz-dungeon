@@ -7,6 +7,7 @@ import { fileURLToPath } from 'url';
 
 import type { PlayerClass, DungeonConfig, GameMode, PerkId } from '../../shared/types.ts';
 import { getAllConfigs, getConfig, saveConfig, deleteConfig } from './data/dungeonConfigs.ts';
+import { listPacks, getPack, savePack, duplicatePack, resetPack, deletePack, ContentValidationError } from './data/contentStore.ts';
 import {
   createRoom,
   joinRoom,
@@ -17,6 +18,7 @@ import {
   selectClass,
   setPlayerReady,
   setGameMode,
+  setContentPack,
   allPlayersReady,
   addBot,
 } from './utils/RoomManager.ts';
@@ -94,6 +96,75 @@ app.delete('/api/dungeons/:id', (req, res) => {
 
 // --- End Dungeon Config REST API ---
 
+// --- Content Packs REST API (see shared/content.ts) ---
+
+app.get('/api/content', (req, res) => {
+  const mode = typeof req.query.mode === 'string' ? req.query.mode : undefined;
+  if (mode && !VALID_MODES.includes(mode as GameMode)) {
+    res.status(400).json({ error: 'Unknown mode' });
+    return;
+  }
+  res.json(listPacks(mode as GameMode | undefined));
+});
+
+app.get('/api/content/:id', (req, res) => {
+  const pack = getPack(req.params.id);
+  if (!pack) {
+    res.status(404).json({ error: 'Content pack not found' });
+    return;
+  }
+  res.json(pack);
+});
+
+app.post('/api/content', (req, res) => {
+  try {
+    const pack = savePack(req.body);
+    res.json(pack);
+  } catch (err) {
+    const message = err instanceof ContentValidationError ? err.message : 'Invalid content pack';
+    if (!(err instanceof ContentValidationError)) console.error('[content] save failed:', err);
+    res.status(400).json({ error: message });
+  }
+});
+
+app.post('/api/content/:id/duplicate', (req, res) => {
+  const pack = duplicatePack(req.params.id);
+  if (!pack) {
+    res.status(404).json({ error: 'Content pack not found' });
+    return;
+  }
+  res.json(pack);
+});
+
+app.post('/api/content/:id/reset', (req, res) => {
+  const existing = getPack(req.params.id);
+  if (!existing) {
+    res.status(404).json({ error: 'Content pack not found' });
+    return;
+  }
+  if (!existing.builtin) {
+    res.status(400).json({ error: 'Only builtin packs can be reset' });
+    return;
+  }
+  const pack = resetPack(req.params.id);
+  res.json(pack);
+});
+
+app.delete('/api/content/:id', (req, res) => {
+  const result = deletePack(req.params.id);
+  if (result === 'not-found') {
+    res.status(404).json({ error: 'Content pack not found' });
+    return;
+  }
+  if (result === 'builtin') {
+    res.status(400).json({ error: 'Builtin pack cannot be deleted' });
+    return;
+  }
+  res.json({ success: true });
+});
+
+// --- End Content Packs REST API ---
+
 app.get('*', (_req, res) => {
   res.sendFile(path.join(clientDistPath, 'index.html'));
 });
@@ -154,6 +225,14 @@ io.on('connection', (socket) => {
 
   socket.on('set-game-mode', (mode: GameMode) => {
     const state = setGameMode(socket.id, mode);
+    if (state) {
+      io.to(state.roomCode).emit('game-state', state);
+    }
+  });
+
+  socket.on('set-content-pack', (mode: GameMode, packId: string | null) => {
+    if (!VALID_MODES.includes(mode)) return;
+    const state = setContentPack(socket.id, mode, typeof packId === 'string' && packId ? packId : null);
     if (state) {
       io.to(state.roomCode).emit('game-state', state);
     }

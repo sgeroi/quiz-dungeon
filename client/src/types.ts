@@ -132,6 +132,8 @@ export interface GameState {
   betPhase?: boolean;
   gameMode?: GameMode;
   spyId?: string;
+  /** Выбранные контент-паки комнаты (лобби). Нет ключа = builtin-пак режима. */
+  contentPacks?: Partial<Record<GameMode, string>>;
   rewardPhase?: {
     rotation: string[];
     turnIndex: number;
@@ -197,6 +199,7 @@ export interface ClientEvents {
   'select-reward': (rewardId: string) => void;
   'use-perk': (perkId: PerkId) => void;
   'set-game-mode': (mode: GameMode) => void;
+  'set-content-pack': (mode: GameMode, packId: string | null) => void;
   'webrtc-offer': (targetId: string, offer: RTCSessionDescriptionInit) => void;
   'webrtc-answer': (targetId: string, answer: RTCSessionDescriptionInit) => void;
   'webrtc-ice-candidate': (targetId: string, candidate: RTCIceCandidateInit) => void;

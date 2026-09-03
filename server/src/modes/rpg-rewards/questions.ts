@@ -1,4 +1,5 @@
 // RPG: Rewards mode questions. 4 options each. Russian. Mixed topics.
+import type { SimpleQuestion } from '../../../../shared/content.ts';
 
 export interface RpgrQuestion {
   id: string;
@@ -45,8 +46,18 @@ export const RPGR_QUESTIONS: RpgrQuestion[] = [
   { id: 'r35', text: 'Какой витамин вырабатывается под солнцем?', options: ['A', 'B', 'C', 'D'], correctIndex: 3 },
 ];
 
-// Pick N unique random questions.
-export function pickRpgrQuestions(n: number): RpgrQuestion[] {
-  const shuffled = [...RPGR_QUESTIONS].sort(() => Math.random() - 0.5);
+/** Convert content-pack questions into this mode's shape. */
+export function toRpgrQuestions(pool: SimpleQuestion[]): RpgrQuestion[] {
+  return pool.map(q => ({
+    id: q.id,
+    text: q.text,
+    options: [...q.options] as [string, string, string, string],
+    correctIndex: q.correctIndex,
+  }));
+}
+
+// Pick N unique random questions from the given pool.
+export function pickRpgrQuestions(source: RpgrQuestion[], n: number): RpgrQuestion[] {
+  const shuffled = [...source].sort(() => Math.random() - 0.5);
   return shuffled.slice(0, n);
 }
