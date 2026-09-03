@@ -218,7 +218,7 @@ export default function LobbyScreen() {
                           : 'bg-white/5 opacity-50'
                     }`}
                   >
-                    <div className="flex items-center gap-2">
+                    <div className={`flex items-center gap-2 ${isSel ? 'pr-14' : ''}`}>
                       <span className="text-lg">{pk.builtin ? '📦' : '✨'}</span>
                       <span className="font-bold text-white text-sm leading-tight truncate">{pk.name}</span>
                     </div>
