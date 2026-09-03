@@ -3,3 +3,4 @@ client/dist/
 server/data/
 *.log
 .DS_Store
+client/public/fonts/
