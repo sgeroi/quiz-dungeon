@@ -8,6 +8,13 @@ import type { ContentPackSummary } from '../content';
 import GameModeGrid from '../components/GameModeGrid';
 import QpHeader from '../components/QpHeader';
 
+function packUnit(mode: GameMode): string {
+  if (mode === 'jeopardy-comp' || mode === 'jeopardy-coop') return 'ячеек';
+  if (mode === 'buckets') return 'наборов';
+  if (mode === 'petersburg') return 'фильмов';
+  return 'вопросов';
+}
+
 export default function LobbyScreen() {
   const { gameState, playerId, selectClass, setReady, startGame, addBot, setGameMode, setContentPack, setInteractive } = useStore();
   const currentMode: GameMode = gameState?.gameMode ?? 'classic';
@@ -32,7 +39,6 @@ export default function LobbyScreen() {
   const isHost = gameState.hostId === playerId;
   const builtinPackId = `builtin-${currentMode}`;
   const selectedPackId = gameState.contentPacks?.[currentMode] ?? builtinPackId;
-  const selectedPack = packs.find((p) => p.id === selectedPackId) ?? packs.find((p) => p.id === builtinPackId);
   const currentModeInfo = GAME_MODES.find((m) => m.id === currentMode) ?? GAME_MODES[0];
   const needsClass = currentMode === 'classic';
   const canReady = needsClass ? !!me?.playerClass : true;
@@ -186,31 +192,49 @@ export default function LobbyScreen() {
             <div className="text-sm text-[var(--color-dungeon-muted)] font-medium mt-0.5 leading-snug">{currentModeInfo.description}</div>
           </div>
 
-          {/* Content pack picker */}
-          <div className="mt-3 rounded-2xl bg-white/5 px-4 py-3 flex flex-wrap items-center justify-between gap-3">
-            <div className="min-w-0">
+          {/* Content pack picker — tiles */}
+          <div className="mt-3">
+            <div className="flex items-baseline justify-between mb-2">
               <div className="text-xs font-bold uppercase tracking-wider text-[var(--color-dungeon-muted)]">Набор вопросов</div>
-              {!isHost && (
-                <div className="font-bold text-white mt-0.5 truncate">
-                  {selectedPack ? `${selectedPack.name} · ${selectedPack.itemCount}` : 'Стандартный набор'}
-                </div>
-              )}
+              <div className="text-xs font-semibold text-[var(--color-dungeon-muted)]">{isHost ? 'выбираешь ты' : 'выбирает хост'}</div>
             </div>
-            {isHost && (
-              <select
-                value={selectedPackId}
-                onChange={(e) => setContentPack(currentMode, e.target.value === builtinPackId ? null : e.target.value)}
-                className="qp-input flex-1 min-w-[200px] py-2 px-3 text-sm font-semibold cursor-pointer"
-                aria-label="Набор вопросов"
-              >
-                {packs.length === 0 && <option value={selectedPackId}>Стандартный набор</option>}
-                {packs.map((p) => (
-                  <option key={p.id} value={p.id} className="bg-[var(--color-dungeon-surface)] text-white">
-                    {p.name} · {p.itemCount}
-                  </option>
-                ))}
-              </select>
-            )}
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+              {(packs.length === 0
+                ? [{ id: builtinPackId, name: 'Стандартный набор', builtin: true, itemCount: 0, mode: currentMode, updatedAt: '' } as ContentPackSummary]
+                : packs
+              ).map((pk) => {
+                const isSel = pk.id === selectedPackId;
+                return (
+                  <button
+                    key={pk.id}
+                    type="button"
+                    disabled={!isHost}
+                    onClick={() => setContentPack(currentMode, pk.id === builtinPackId ? null : pk.id)}
+                    className={`relative text-left rounded-2xl px-3 py-2.5 transition-all ${
+                      isSel
+                        ? 'bg-[var(--color-dungeon-gold)]/12 ring-2 ring-[var(--color-dungeon-gold)] shadow-[0_0_18px_rgba(255,219,16,0.25)]'
+                        : isHost
+                          ? 'bg-white/5 hover:bg-white/10 active:scale-[0.98]'
+                          : 'bg-white/5 opacity-50'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className="text-lg">{pk.builtin ? '📦' : '✨'}</span>
+                      <span className="font-bold text-white text-sm leading-tight truncate">{pk.name}</span>
+                    </div>
+                    <div className="text-[11px] font-semibold text-[var(--color-dungeon-muted)] mt-1">
+                      {pk.itemCount > 0 ? `${pk.itemCount} ${packUnit(currentMode)}` : 'встроенный'}
+                      {pk.builtin && pk.itemCount > 0 ? ' · встроенный' : ''}
+                    </div>
+                    {isSel && (
+                      <span className="absolute top-2 right-2 rounded-full bg-[var(--color-dungeon-gold)] px-1.5 py-0.5 text-[9px] font-extrabold uppercase text-[var(--color-dungeon-gold-fg)]">
+                        выбран
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
           </div>
         </div>
       </div>

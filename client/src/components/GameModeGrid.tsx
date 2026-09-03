@@ -21,6 +21,8 @@ interface Props {
   onSelect?: (mode: GameMode) => void;
   columns?: string;
   compact?: boolean;
+  /** Показывать краткое описание режима в карточке. */
+  showDescription?: boolean;
 }
 
 export default function GameModeGrid({
@@ -28,6 +30,7 @@ export default function GameModeGrid({
   onSelect,
   columns = 'grid-cols-2 sm:grid-cols-3 md:grid-cols-5',
   compact = false,
+  showDescription = false,
 }: Props) {
   const readOnly = !onSelect;
   return (
@@ -64,6 +67,9 @@ export default function GameModeGrid({
             </div>
             <div className="bg-[var(--color-dungeon-surface-2)] px-3 py-2.5">
               <div className={`${compact ? 'text-xs' : 'text-[13px]'} font-bold leading-tight text-white`}>{mode.name}</div>
+              {showDescription && (
+                <div className="mt-1 text-[11px] leading-snug font-medium text-[var(--color-dungeon-muted)] line-clamp-3">{mode.description}</div>
+              )}
             </div>
           </button>
         );

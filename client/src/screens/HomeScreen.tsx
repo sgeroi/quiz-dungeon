@@ -27,15 +27,11 @@ export default function HomeScreen() {
       {/* Hero */}
       <div className="grid grid-cols-1 md:grid-cols-[minmax(0,5fr)_minmax(0,4fr)] gap-6 md:gap-10 items-center mb-8">
         <div>
-          <h1 className="text-4xl sm:text-5xl md:text-[56px] font-extrabold leading-[1.05] tracking-tight">
-            Башня Знаний
-            <br />
-            <span className="text-[var(--color-dungeon-gold)]">кооперативный</span>
-            <br />
-            квиз-данжен
+          <h1 className="text-3xl sm:text-4xl md:text-[44px] font-extrabold leading-[1.1] tracking-tight">
+            Платформа интерактивных интеллектуально-развлекательных игр для компании
           </h1>
-          <p className="mt-4 text-base sm:text-lg text-[var(--color-dungeon-muted)] font-medium max-w-md">
-            Собери пати, выбери игру — и вперёд: подземелье, «Своя игра», миллионер, мафия и ещё десяток режимов.
+          <p className="mt-4 text-lg sm:text-2xl font-bold text-[var(--color-dungeon-gold)] max-w-xl leading-snug">
+            Играйте в одной комнате или с друзьями по сети
           </p>
         </div>
 
@@ -123,6 +119,7 @@ export default function HomeScreen() {
         <GameModeGrid
           selected={selectedMode}
           onSelect={(m) => setSelectedMode(m === selectedMode ? null : m)}
+          showDescription
         />
       </div>
 
