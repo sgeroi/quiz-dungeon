@@ -1,0 +1,205 @@
+@import "tailwindcss";
+
+/* Gilroy — фирменный шрифт Квиз, плиз! Хоум */
+@font-face { font-family: 'Gilroy'; src: url('/fonts/gilroy-400.woff2') format('woff2'); font-weight: 400; font-display: swap; }
+@font-face { font-family: 'Gilroy'; src: url('/fonts/gilroy-500.woff2') format('woff2'); font-weight: 500; font-display: swap; }
+@font-face { font-family: 'Gilroy'; src: url('/fonts/gilroy-600.woff2') format('woff2'); font-weight: 600; font-display: swap; }
+@font-face { font-family: 'Gilroy'; src: url('/fonts/gilroy-700.woff2') format('woff2'); font-weight: 700; font-display: swap; }
+@font-face { font-family: 'Gilroy'; src: url('/fonts/gilroy-800.woff2') format('woff2'); font-weight: 800; font-display: swap; }
+@font-face { font-family: 'Gilroy'; src: url('/fonts/gilroy-900.woff2') format('woff2'); font-weight: 900; font-display: swap; }
+
+@theme {
+  --font-sans: 'Gilroy', system-ui, sans-serif;
+}
+
+:root {
+  /* Палитра Квиз, плиз! Хоум */
+  --color-dungeon-bg: #1C0925;
+  --color-dungeon-surface: #250B31;
+  --color-dungeon-surface-2: #30133F;
+  --color-dungeon-accent: #FF3CAE;
+  --color-dungeon-gold: #FFDB10;
+  --color-dungeon-gold-fg: #3A2F00;
+  --color-dungeon-heal: #8DFF85;
+  --color-dungeon-mana: #75BFFF;
+  --color-dungeon-purple: #CD8EFF;
+  --color-dungeon-muted: #A284AF;
+}
+
+html { font-family: 'Gilroy', system-ui, sans-serif; }
+
+body {
+  background-color: var(--color-dungeon-bg);
+  background-image: radial-gradient(120% 80% at 50% 0, #2a0f38 0, #190324 45%, #110018 100%);
+  background-attachment: fixed;
+  color: #ffffff;
+  min-height: 100dvh;
+  font-family: 'Gilroy', system-ui, sans-serif;
+}
+
+#root {
+  position: relative;
+  z-index: 1;
+}
+
+/* Кнопки в стиле QP Home */
+.btn-primary {
+  background: var(--color-dungeon-gold);
+  color: var(--color-dungeon-gold-fg);
+  border-radius: 24px;
+  font-weight: 700;
+  transition: filter .15s, transform .1s;
+}
+.btn-primary:hover { filter: brightness(1.05); }
+.btn-primary:active { transform: scale(.97); }
+.btn-primary:disabled { background: rgba(255,255,255,.07); color: rgba(255,255,255,.35); cursor: not-allowed; }
+
+.btn-secondary {
+  background: rgba(255,255,255,.07);
+  color: #fff;
+  border-radius: 24px;
+  font-weight: 700;
+  transition: background .15s, transform .1s;
+}
+.btn-secondary:hover { background: rgba(255,255,255,.12); }
+.btn-secondary:active { transform: scale(.97); }
+
+.btn-success {
+  background: linear-gradient(285.84deg, rgba(5,223,114,.85) 1%, #8DFF85 99%);
+  color: #06301a;
+  border-radius: 24px;
+  font-weight: 700;
+}
+
+/* Неоновая рамка (как блок «Новинки» на сайте) */
+.neon-pink {
+  border: 1px solid rgba(255,60,174,.9);
+  box-shadow: 0 0 18px rgba(255,60,174,.55), 0 0 48px rgba(255,60,174,.25), inset 0 0 24px rgba(255,60,174,.08);
+}
+
+.qp-input {
+  background: rgba(255,255,255,.07);
+  border: 1px solid rgba(255,255,255,.1);
+  border-radius: 24px;
+  color: #fff;
+}
+.qp-input::placeholder { color: rgba(255,255,255,.45); }
+.qp-input:focus { outline: none; border-color: var(--color-dungeon-gold); box-shadow: 0 0 0 2px rgba(255,219,16,.25); }
+
+/* Glass panel */
+.glass-panel {
+  background: linear-gradient(0deg, rgba(255,255,255,.07), rgba(255,255,255,.07)), var(--color-dungeon-surface);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 24px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.25);
+}
+
+.glass-panel-gold {
+  background: linear-gradient(0deg, rgba(255,219,16,.10), rgba(255,219,16,.10)), var(--color-dungeon-surface-2);
+  border: 1px solid rgba(255,219,16,0.6);
+  border-radius: 24px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.25), 0 0 20px rgba(255,219,16,0.15);
+}
+
+/* Glow effects */
+.glow-gold { box-shadow: 0 0 20px rgba(255,219,16,0.25), 0 0 40px rgba(255,219,16,0.1); }
+.glow-red { box-shadow: 0 0 20px rgba(255,60,174,0.3), 0 0 40px rgba(255,60,174,0.1); }
+.glow-blue { box-shadow: 0 0 20px rgba(96,165,250,0.2), 0 0 40px rgba(96,165,250,0.1); }
+.glow-green { box-shadow: 0 0 20px rgba(74,222,128,0.2), 0 0 40px rgba(74,222,128,0.1); }
+
+/* Animated border gradient */
+.border-glow {
+  position: relative;
+  overflow: hidden;
+}
+.border-glow::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  padding: 1px;
+  border-radius: inherit;
+  background: linear-gradient(135deg, rgba(255,219,16,0.6), rgba(255,60,174,0.6), rgba(205,142,255,0.6));
+  mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  mask-composite: exclude;
+  pointer-events: none;
+}
+
+/* HP bar with shine */
+.hp-bar {
+  position: relative;
+  overflow: hidden;
+}
+.hp-bar::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.1), transparent);
+  animation: shimmer 3s infinite;
+}
+
+@keyframes shimmer {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+
+@keyframes shake {
+  0%, 100% { transform: translateX(0); }
+  20% { transform: translateX(-8px); }
+  40% { transform: translateX(8px); }
+  60% { transform: translateX(-4px); }
+  80% { transform: translateX(4px); }
+}
+
+@keyframes floatUp {
+  0% { opacity: 1; transform: translateY(0) scale(1); }
+  50% { opacity: 1; transform: translateY(-20px) scale(1.2); }
+  100% { opacity: 0; transform: translateY(-40px) scale(0.8); }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: scale(0.95) translateY(8px); }
+  to { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+@keyframes slideInRight {
+  from { transform: translateX(40px); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+
+@keyframes slideInLeft {
+  from { transform: translateX(-40px); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+
+@keyframes bobRun {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-4px); }
+}
+
+@keyframes monsterIdle {
+  0%, 100% { transform: scale(1) translateY(0); }
+  50% { transform: scale(1.05) translateY(-3px); }
+}
+
+@keyframes pulse-ring {
+  0% { transform: scale(0.8); opacity: 1; }
+  100% { transform: scale(1.6); opacity: 0; }
+}
+
+@keyframes float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-6px); }
+}
+
+@keyframes sparkle {
+  0%, 100% { opacity: 0.3; transform: scale(0.8); }
+  50% { opacity: 1; transform: scale(1.2); }
+}
+
+/* Torch flicker for decorative elements */
+@keyframes flicker {
+  0%, 100% { opacity: 0.8; }
+  25% { opacity: 1; }
+  50% { opacity: 0.6; }
+  75% { opacity: 0.9; }
+}

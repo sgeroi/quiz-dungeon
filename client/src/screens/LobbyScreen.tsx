@@ -1,0 +1,181 @@
+import { useStore } from '../store';
+import { CLASS_LIST } from '../classData';
+import { GAME_MODES } from '../types';
+import type { PlayerClass, GameMode } from '../types';
+import GameModeGrid from '../components/GameModeGrid';
+import QpHeader from '../components/QpHeader';
+
+export default function LobbyScreen() {
+  const { gameState, playerId, selectClass, setReady, startGame, addBot, setGameMode } = useStore();
+  if (!gameState || !playerId) return null;
+
+  const players = Object.values(gameState.players);
+  const me = gameState.players[playerId];
+  const allReady = players.length >= 2 && players.every((p) => p.isReady);
+  const isHost = gameState.hostId === playerId;
+  const currentMode = gameState.gameMode ?? 'classic';
+  const currentModeInfo = GAME_MODES.find((m) => m.id === currentMode) ?? GAME_MODES[0];
+  const needsClass = currentMode === 'classic';
+  const canReady = needsClass ? !!me?.playerClass : true;
+  const readyCount = players.filter((p) => p.isReady).length;
+
+  return (
+    <div className="h-full flex flex-col p-4 sm:p-6 overflow-y-auto">
+      {/* Header: logo + room code */}
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-5 max-w-6xl mx-auto w-full pl-14 sm:pl-24">
+        <QpHeader subtitle="Башня Знаний" />
+        <div className="flex items-center gap-3 rounded-full bg-black/40 border border-white/15 pl-4 pr-1.5 py-1.5">
+          <span className="text-xs font-bold uppercase tracking-wider text-[var(--color-dungeon-muted)]">Код пати</span>
+          <span className="rounded-full bg-[var(--color-dungeon-gold)] px-4 py-1.5 font-mono text-xl font-black tracking-[0.3em] text-[var(--color-dungeon-gold-fg)]">
+            {gameState.roomCode}
+          </span>
+        </div>
+      </div>
+
+      {/* Two columns: party | game */}
+      <div className="grid grid-cols-1 md:grid-cols-[minmax(0,2fr)_minmax(0,3fr)] gap-4 max-w-6xl mx-auto w-full mb-5">
+        {/* Party */}
+        <div className="glass-panel p-4 sm:p-5">
+          <div className="flex items-baseline justify-between mb-3">
+            <h2 className="text-xl font-extrabold">Пати</h2>
+            <span className="text-sm font-semibold text-[var(--color-dungeon-muted)]">
+              {players.length}/8 · готовы {readyCount}
+            </span>
+          </div>
+          <div className="flex flex-col gap-2">
+            {players.map((p) => {
+              const isMe = p.id === playerId;
+              const classDef = p.playerClass ? CLASS_LIST.find((c) => c.id === p.playerClass) : null;
+              return (
+                <div
+                  key={p.id}
+                  className={`flex items-center gap-3 p-2.5 rounded-2xl transition-all ${
+                    isMe ? 'bg-[var(--color-dungeon-gold)]/10 border border-[var(--color-dungeon-gold)]/40' : 'bg-white/5'
+                  }`}
+                >
+                  {needsClass && classDef?.sprite ? (
+                    <img src={classDef.sprite} alt={classDef.nameRu} className="w-10 h-10 object-contain" />
+                  ) : (
+                    <div className="w-10 h-10 rounded-full bg-white/10 flex items-center justify-center text-xl">
+                      {(needsClass && classDef?.emoji) || (p.isBot ? '🤖' : '🧑')}
+                    </div>
+                  )}
+                  <div className="flex-1 min-w-0">
+                    <div className="font-bold text-white text-sm truncate flex items-center gap-1.5">
+                      {p.id === gameState.hostId && (
+                        <span className="text-[10px] uppercase bg-[var(--color-dungeon-gold)] text-[var(--color-dungeon-gold-fg)] px-1.5 py-0.5 rounded-full font-extrabold">хост</span>
+                      )}
+                      {p.isBot && <span className="text-[10px] uppercase text-white/70 bg-white/10 px-1.5 py-0.5 rounded-full font-extrabold">бот</span>}
+                      <span className="truncate">{p.name}</span>
+                      {isMe && <span className="text-xs text-[var(--color-dungeon-gold)]">(ты)</span>}
+                    </div>
+                    {needsClass && classDef && <div className="text-xs text-[var(--color-dungeon-muted)] font-medium">{classDef.nameRu}</div>}
+                  </div>
+                  {p.isReady ? (
+                    <span className="rounded-full bg-[var(--color-dungeon-heal)]/20 text-[var(--color-dungeon-heal)] text-xs font-extrabold px-2.5 py-1">готов</span>
+                  ) : (
+                    <span className="rounded-full bg-white/5 text-white/40 text-xs font-bold px-2.5 py-1">ждём</span>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+          {isHost && players.length < 8 && (
+            <button
+              onClick={addBot}
+              className="btn-secondary w-full mt-3 py-2.5 px-4 text-sm border border-dashed border-white/20"
+            >
+              + Добавить бота
+            </button>
+          )}
+          <div className="mt-3 text-xs text-[var(--color-dungeon-muted)] font-medium text-center">
+            Поделись кодом — друзья заходят с телефона, планшета или ноутбука.
+          </div>
+        </div>
+
+        {/* Game */}
+        <div className="rounded-3xl neon-pink bg-[var(--color-dungeon-surface)]/60 p-4 sm:p-5">
+          <div className="flex items-baseline justify-between mb-3">
+            <h2 className="text-xl font-extrabold">Игра</h2>
+            <span className="text-sm font-semibold text-[var(--color-dungeon-muted)]">
+              {isHost ? 'выбираешь ты' : 'выбирает хост'}
+            </span>
+          </div>
+          <GameModeGrid
+            selected={currentMode}
+            onSelect={isHost ? (m: GameMode) => setGameMode(m) : undefined}
+            columns="grid-cols-2 sm:grid-cols-3 lg:grid-cols-4"
+            compact
+          />
+          <div className="mt-4 rounded-2xl bg-white/5 px-4 py-3">
+            <div className="font-extrabold text-white">
+              {currentModeInfo.emoji} {currentModeInfo.name}
+            </div>
+            <div className="text-sm text-[var(--color-dungeon-muted)] font-medium mt-0.5 leading-snug">{currentModeInfo.description}</div>
+          </div>
+        </div>
+      </div>
+
+      {/* Class selection — only in RPG (classic) mode */}
+      {needsClass && (
+        <div className="glass-panel p-4 sm:p-5 mb-5 max-w-6xl mx-auto w-full">
+          <h2 className="text-xl font-extrabold mb-3">Выбери класс</h2>
+          <div className="grid grid-cols-3 sm:grid-cols-6 gap-3">
+            {CLASS_LIST.map((cls) => {
+              const isSelected = me?.playerClass === cls.id;
+              const isTaken = players.some((p) => p.id !== playerId && p.playerClass === cls.id);
+              return (
+                <button
+                  key={cls.id}
+                  onClick={() => selectClass(cls.id as PlayerClass)}
+                  disabled={isTaken}
+                  className={`p-3 rounded-2xl text-center transition-all active:scale-[0.97] ${
+                    isSelected
+                      ? 'bg-[var(--color-dungeon-gold)]/10 ring-2 ring-[var(--color-dungeon-gold)]'
+                      : isTaken
+                        ? 'bg-white/5 opacity-30'
+                        : 'bg-white/5 hover:bg-white/10'
+                  }`}
+                >
+                  {cls.sprite ? (
+                    <img src={cls.sprite} alt={cls.nameRu} className="w-14 h-14 object-contain mb-1 mx-auto" />
+                  ) : (
+                    <div className="text-3xl mb-1">{cls.emoji}</div>
+                  )}
+                  <div className="text-sm font-bold text-white">{cls.nameRu}</div>
+                  <div className="text-[11px] text-[var(--color-dungeon-muted)] mt-1 line-clamp-2 leading-snug font-medium">{cls.description}</div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Action buttons */}
+      <div className="mt-auto flex flex-col gap-3 pt-2 max-w-md mx-auto w-full">
+        {players.length < 2 && (
+          <div className="text-center text-[var(--color-dungeon-muted)] text-sm font-semibold">Нужно минимум 2 игрока, чтобы начать.</div>
+        )}
+        {canReady && !me.isReady && (
+          <button onClick={setReady} className="btn-success w-full py-4 px-6 text-lg active:scale-[0.97] transition-transform">
+            Готов!
+          </button>
+        )}
+        {!canReady && !me.isReady && (
+          <div className="text-center text-[var(--color-dungeon-muted)] text-sm font-semibold">Выбери класс, чтобы отметиться готовым.</div>
+        )}
+        {me.isReady && !allReady && (
+          <div className="text-center text-[var(--color-dungeon-muted)] text-sm font-semibold">Ждём остальных…</div>
+        )}
+        {isHost && allReady && (
+          <button onClick={() => startGame()} className="btn-primary w-full py-4 px-6 text-lg animate-pulse">
+            Начать игру
+          </button>
+        )}
+        {!isHost && allReady && (
+          <div className="text-center text-[var(--color-dungeon-muted)] text-sm font-semibold">Хост запускает игру…</div>
+        )}
+      </div>
+    </div>
+  );
+}
