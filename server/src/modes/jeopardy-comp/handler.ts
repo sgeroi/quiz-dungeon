@@ -54,6 +54,12 @@ const REVEAL_DELAY_MS = 2500;
 
 // ==================== HELPERS ====================
 
+/** This handler is active for 'jeopardy' in ffa/teams format (dispatched from modes/jeopardy) or the legacy 'jeopardy-comp' id. */
+export function isJeopardyCompActive(state: GameState): boolean {
+  if (state.gameMode === 'jeopardy-comp') return true;
+  return state.gameMode === 'jeopardy' && state.teamMode !== 'coop';
+}
+
 function getJ(state: GameState): JeopardyState {
   return (state as unknown as { jeopardy: JeopardyState }).jeopardy;
 }
@@ -124,7 +130,7 @@ function clearAllTimers(roomCode: string): void {
 // ==================== GAME FLOW ====================
 
 function startGame(io: Server, state: GameState): void {
-  const packData = getJeopardyData('jeopardy-comp', state.contentPacks?.['jeopardy-comp']);
+  const packData = getJeopardyData('jeopardy', state.contentPacks?.jeopardy);
   const grid: JeopardyGrid = { topics: [...packData.topics], cells: packData.cells };
   gridByRoom.set(state.roomCode, grid);
   const publicGrid = {
@@ -155,7 +161,6 @@ function startGame(io: Server, state: GameState): void {
 
   state.phase = 'question'; // generic phase indicating "in-game"
   state.currentQuestion = null;
-  state.gameMode = 'jeopardy-comp';
   state.timer = 0;
   state.maxTimer = 0;
 
@@ -447,20 +452,20 @@ const handler: ModeHandler = {
   registerSocket(io, socket: Socket, getState) {
     socket.on('mode-jeopardy-pick', (payload: { topicIdx: number; valueIdx: number }) => {
       const state = getState();
-      if (!state || state.gameMode !== 'jeopardy-comp') return;
+      if (!state || !isJeopardyCompActive(state)) return;
       if (!payload || typeof payload.topicIdx !== 'number' || typeof payload.valueIdx !== 'number') return;
       pickCell(io, state, socket.id, payload.topicIdx, payload.valueIdx);
     });
 
     socket.on('mode-jeopardy-buzz', () => {
       const state = getState();
-      if (!state || state.gameMode !== 'jeopardy-comp') return;
+      if (!state || !isJeopardyCompActive(state)) return;
       handleBuzz(io, state, socket.id);
     });
 
     socket.on('mode-jeopardy-answer', (index: number) => {
       const state = getState();
-      if (!state || state.gameMode !== 'jeopardy-comp') return;
+      if (!state || !isJeopardyCompActive(state)) return;
       if (typeof index !== 'number') return;
       handleAnswer(io, state, socket.id, index);
     });

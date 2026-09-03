@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { socket } from './socket';
-import type { GameState, PlayerClass, Question, GameMode } from './types';
+import type { GameState, PlayerClass, Question, GameMode, TeamMode, GameOverStats } from './types';
 
 interface ChainTurnData {
   playerId: string;
@@ -30,6 +30,8 @@ interface StoreState {
 
   /** true when this tab is a TV screen (#/screen/CODE), not a player. */
   isScreen: boolean;
+  /** Last `game-over` payload (victory + stats) — read by ResultScreen / ScreenView. */
+  gameOver: { victory: boolean; stats: GameOverStats } | null;
 
   setPlayerName: (name: string) => void;
   createRoom: (mode?: GameMode, opts?: { interactive?: boolean }) => void;
@@ -48,6 +50,9 @@ interface StoreState {
   cheatSkip: () => void;
   setGameMode: (mode: GameMode) => void;
   setContentPack: (mode: GameMode, packId: string | null) => void;
+  setTeamMode: (mode: TeamMode) => void;
+  setTeamCount: (n: 2 | 3 | 4) => void;
+  joinTeam: (teamId: string) => void;
   leaveRoom: () => void;
 }
 
@@ -66,6 +71,7 @@ export const useStore = create<StoreState>((set, get) => ({
   chainTurn: null,
   chainResult: null,
   isScreen: false,
+  gameOver: null,
 
   setPlayerName: (name: string) => set({ playerName: name }),
 
@@ -134,6 +140,9 @@ export const useStore = create<StoreState>((set, get) => ({
   cheatSkip: () => { socket.emit('cheat-skip'); },
   setGameMode: (mode: GameMode) => { socket.emit('set-game-mode', mode); },
   setContentPack: (mode: GameMode, packId: string | null) => { socket.emit('set-content-pack', mode, packId); },
+  setTeamMode: (mode: TeamMode) => { socket.emit('set-team-mode', mode); },
+  setTeamCount: (n: 2 | 3 | 4) => { socket.emit('set-team-count', n); },
+  joinTeam: (teamId: string) => { socket.emit('join-team', teamId); },
 
   leaveRoom: () => {
     socket.emit('leave-room');
@@ -149,6 +158,7 @@ export const useStore = create<StoreState>((set, get) => ({
       personalResult: null,
       chainTurn: null,
       chainResult: null,
+      gameOver: null,
     });
   },
 }));
@@ -220,13 +230,13 @@ socket.on('disconnect', () => {
 });
 
 socket.on('room-created', (roomCode: string) => {
-  useStore.setState({ roomCode });
+  useStore.setState({ roomCode, gameOver: null });
   const name = useStore.getState().playerName;
   if (name) saveSession(roomCode, name);
 });
 
 socket.on('room-joined', (state: GameState) => {
-  useStore.setState({ gameState: state, roomCode: state.roomCode, error: null, isScreen: false });
+  useStore.setState({ gameState: state, roomCode: state.roomCode, error: null, isScreen: false, gameOver: null });
   const me = socket.id ? state.players[socket.id] : null;
   if (me) saveSession(state.roomCode, me.name);
 });
@@ -247,6 +257,8 @@ socket.on('game-state', (state: GameState) => {
     updates.personalResult = null;
     updates.personalQuestion = null;
   }
+  // Back in the lobby (new round of the same room) — forget the old final stats.
+  if (state.phase === 'lobby' && prev.gameOver) updates.gameOver = null;
   useStore.setState(updates);
 });
 
@@ -265,7 +277,8 @@ socket.on('timer-tick', (seconds: number) => {
   }
 });
 
-socket.on('game-over', () => {
+socket.on('game-over', (victory: boolean, stats: GameOverStats) => {
+  useStore.setState({ gameOver: { victory: !!victory, stats: stats && typeof stats === 'object' ? stats : {} } });
   if (!useStore.getState().isScreen) clearSession();
 });
 
@@ -280,6 +293,7 @@ socket.on('room-closed', () => {
     gameState: null,
     roomCode: null,
     error: 'Хост закрыл комнату',
+    gameOver: null,
     captainId: null,
     sacrificePlayerId: null,
     betPhase: false,

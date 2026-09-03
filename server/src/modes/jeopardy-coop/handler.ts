@@ -311,9 +311,15 @@ function pushState(io: Server, state: GameState, data: JCoopRoomData): void {
 // Game flow
 // =====================================================================
 
+/** This handler is active for 'jeopardy' in coop format (dispatched from modes/jeopardy) or the legacy 'jeopardy-coop' id. */
+export function isJeopardyCoopActive(state: GameState): boolean {
+  if (state.gameMode === 'jeopardy-coop') return true;
+  return state.gameMode === 'jeopardy' && state.teamMode === 'coop';
+}
+
 function initRoom(state: GameState): JCoopRoomData {
   rooms.delete(state.roomCode);
-  const { topics, questions } = packToCoopGrid(getJeopardyData('jeopardy-coop', state.contentPacks?.['jeopardy-coop']));
+  const { topics, questions } = packToCoopGrid(getJeopardyData('jeopardy', state.contentPacks?.jeopardy));
   const grid = new Map<string, { topic: JCoopTopic; value: JCoopValue; played: boolean }>();
   for (const topic of topics) {
     for (const value of JCOOP_VALUES) {
@@ -674,7 +680,7 @@ const handler: ModeHandler = {
     socket.on('mode-jcoop-pick', (payload: { topic: JCoopTopic; value: JCoopValue }) => {
       const state = getState();
       if (!state) return;
-      if (state.gameMode !== 'jeopardy-coop') return;
+      if (!isJeopardyCoopActive(state)) return;
       const data = rooms.get(state.roomCode);
       if (!data) return;
       if (data.current) return;
@@ -691,7 +697,7 @@ const handler: ModeHandler = {
     socket.on('mode-jcoop-answer', (answerIndex: number) => {
       const state = getState();
       if (!state) return;
-      if (state.gameMode !== 'jeopardy-coop') return;
+      if (!isJeopardyCoopActive(state)) return;
       if (state.phase !== 'answering') return;
       if (typeof answerIndex !== 'number') return;
       submitJCoopAnswer(io, state, socket.id, answerIndex);

@@ -4,6 +4,7 @@ import type { ModeHandler } from './types.ts';
 import millionaire from './millionaire/handler.ts';
 import buckets from './buckets/handler.ts';
 import spy from './spy/handler.ts';
+import jeopardy from './jeopardy/handler.ts';
 import jeopardyComp from './jeopardy-comp/handler.ts';
 import jeopardyCoop from './jeopardy-coop/handler.ts';
 import speed from './speed/handler.ts';
@@ -14,6 +15,7 @@ export const MODE_HANDLERS: Partial<Record<GameMode, ModeHandler>> = {
   millionaire,
   buckets,
   spy,
+  jeopardy,
   'jeopardy-comp': jeopardyComp,
   'jeopardy-coop': jeopardyCoop,
   speed,

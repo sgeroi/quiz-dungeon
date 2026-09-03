@@ -5,7 +5,7 @@ import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
-import type { PlayerClass, DungeonConfig, GameMode, PerkId } from '../../shared/types.ts';
+import type { PlayerClass, DungeonConfig, GameMode, PerkId, TeamMode } from '../../shared/types.ts';
 import { getAllConfigs, getConfig, saveConfig, deleteConfig } from './data/dungeonConfigs.ts';
 import { listPacks, getPack, savePack, duplicatePack, resetPack, deletePack, ContentValidationError } from './data/contentStore.ts';
 import {
@@ -20,6 +20,10 @@ import {
   setGameMode,
   setContentPack,
   allPlayersReady,
+  getTeamSetupError,
+  setTeamMode,
+  setTeamCount,
+  joinTeam,
   addBot,
   setInteractive,
   addScreen,
@@ -32,9 +36,10 @@ import { usePerk } from './game/Perks.ts';
 import { MODE_HANDLERS } from './modes/index.ts';
 
 const VALID_MODES: GameMode[] = [
-  'classic', 'millionaire', 'topic-split', 'jeopardy-comp', 'jeopardy-coop',
+  'classic', 'millionaire', 'jeopardy', 'topic-split', 'jeopardy-comp', 'jeopardy-coop',
   'speed', 'petersburg', 'buckets', 'rpg-rewards', 'spy',
 ];
+const VALID_TEAM_MODES: TeamMode[] = ['ffa', 'teams', 'coop'];
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -243,6 +248,24 @@ io.on('connection', (socket) => {
     }
   });
 
+  // --- Team modes (docs/TEAMS.md) ---
+  socket.on('set-team-mode', (mode: TeamMode) => {
+    if (!VALID_TEAM_MODES.includes(mode)) return;
+    const state = setTeamMode(socket.id, mode);
+    if (state) io.to(state.roomCode).emit('game-state', state);
+  });
+
+  socket.on('set-team-count', (n: number) => {
+    const state = setTeamCount(socket.id, Number(n));
+    if (state) io.to(state.roomCode).emit('game-state', state);
+  });
+
+  socket.on('join-team', (teamId: string) => {
+    if (typeof teamId !== 'string') return;
+    const state = joinTeam(socket.id, teamId);
+    if (state) io.to(state.roomCode).emit('game-state', state);
+  });
+
   // Host-only, lobby-only: toggle interactive mode (QR join, no video/mic).
   socket.on('set-interactive', (on: boolean) => {
     const state = setInteractive(socket.id, !!on);
@@ -291,6 +314,11 @@ io.on('connection', (socket) => {
     const state = getRoomByPlayer(socket.id);
     if (!state) return;
 
+    const teamError = getTeamSetupError(state);
+    if (teamError) {
+      socket.emit('error', teamError);
+      return;
+    }
     if (!allPlayersReady(state)) {
       socket.emit('error', 'All players must select a class and be ready.');
       return;

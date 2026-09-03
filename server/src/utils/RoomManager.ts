@@ -1,5 +1,6 @@
-import type { GameState, Player, PlayerClass, GameMode } from '../../../shared/types.ts';
+import type { GameState, Player, PlayerClass, GameMode, TeamMode } from '../../../shared/types.ts';
 import { getPack } from '../data/contentStore.ts';
+import { availableTeamModes, makeTeams, smallestTeam, teamSetupError } from './teams.ts';
 
 const rooms = new Map<string, GameState>();
 const playerToRoom = new Map<string, string>();
@@ -59,6 +60,8 @@ export function createRoom(hostSocketId: string, hostName: string, mode: GameMod
     currentQuestion: null,
     lastResults: null,
     gameMode: mode,
+    teamMode: 'coop',
+    teams: [],
     interactive: !!opts.interactive,
     screenIds: [],
   };
@@ -258,9 +261,86 @@ export function setGameMode(socketId: string, mode: GameMode): GameState | null 
   if (state.phase !== 'lobby') return null;
   if (state.gameMode === mode) return state;
   state.gameMode = mode;
+  // Current format may be unavailable in the new game -> first available one.
+  const avail = availableTeamModes(mode);
+  if (!avail.includes(state.teamMode ?? 'coop')) {
+    applyTeamMode(state, avail[0] ?? 'coop');
+  }
   // New game — everyone confirms readiness again (bots are always ready).
   for (const p of Object.values(state.players)) p.isReady = !!p.isBot;
   return state;
+}
+
+// ==================== TEAM MODES (see docs/TEAMS.md) ====================
+
+/** Switch teamMode in place: entering 'teams' creates 2 teams, leaving it clears teams/teamId. */
+function applyTeamMode(state: GameState, mode: TeamMode): void {
+  const wasTeams = state.teamMode === 'teams';
+  state.teamMode = mode;
+  if (mode === 'teams') {
+    if (!wasTeams || !state.teams || state.teams.length < 2) state.teams = makeTeams(2);
+    for (const p of Object.values(state.players)) p.teamId = undefined;
+  } else {
+    state.teams = [];
+    for (const p of Object.values(state.players)) p.teamId = undefined;
+  }
+  // Format changed — everyone confirms readiness again (bots stay ready, and
+  // in teams-mode bots are seated automatically).
+  for (const p of Object.values(state.players)) {
+    p.isReady = !!p.isBot;
+    if (p.isBot && mode === 'teams') p.teamId = smallestTeam(state)?.id;
+  }
+}
+
+/** Host-only, lobby-only. Ignored when the format is unavailable for the current game. */
+export function setTeamMode(socketId: string, mode: TeamMode): GameState | null {
+  const state = getRoomByPlayer(socketId);
+  if (!state) return null;
+  if (state.hostId !== socketId) return null;
+  if (state.phase !== 'lobby') return null;
+  if (!availableTeamModes(state.gameMode).includes(mode)) return state;
+  if (state.teamMode === mode) return state;
+  applyTeamMode(state, mode);
+  return state;
+}
+
+/** Host-only, lobby-only, teams-mode only: 2..4 teams. Players of removed teams lose their team (and readiness). */
+export function setTeamCount(socketId: string, n: number): GameState | null {
+  const state = getRoomByPlayer(socketId);
+  if (!state) return null;
+  if (state.hostId !== socketId) return null;
+  if (state.phase !== 'lobby') return null;
+  if (state.teamMode !== 'teams') return null;
+  if (n !== 2 && n !== 3 && n !== 4) return null;
+  const teams = makeTeams(n);
+  const keep = new Set(teams.map((t) => t.id));
+  // Preserve renamed/customised teams that survive the resize.
+  state.teams = teams.map((t) => state.teams.find((old) => old.id === t.id) ?? t);
+  for (const p of Object.values(state.players)) {
+    if (p.teamId && !keep.has(p.teamId)) {
+      p.teamId = p.isBot ? smallestTeam(state)?.id : undefined;
+      if (!p.isBot) p.isReady = false;
+    }
+  }
+  return state;
+}
+
+/** Any player (incl. host), lobby-only, teams-mode only. */
+export function joinTeam(socketId: string, teamId: string): GameState | null {
+  const state = getRoomByPlayer(socketId);
+  if (!state) return null;
+  if (state.phase !== 'lobby') return null;
+  if (state.teamMode !== 'teams') return null;
+  const player = state.players[socketId];
+  if (!player) return null;
+  if (!state.teams.some((t) => t.id === teamId)) return null;
+  player.teamId = teamId;
+  return state;
+}
+
+/** Error message when the party can't start because of team setup; null when fine. */
+export function getTeamSetupError(state: GameState): string | null {
+  return teamSetupError(state);
 }
 
 /** Host-only, lobby-only: choose a content pack for a mode. null = builtin. */
@@ -287,6 +367,8 @@ export function setPlayerReady(socketId: string): GameState | null {
   const player = state.players[socketId];
   if (!player) return null;
 
+  // In teams-mode you pick a team first.
+  if (state.teamMode === 'teams' && !player.teamId) return null;
   player.isReady = true;
   return state;
 }
@@ -295,7 +377,8 @@ export function allPlayersReady(room: GameState): boolean {
   const players = Object.values(room.players);
   if (players.length === 0) return false;
   const needsClass = (room.gameMode ?? 'classic') === 'classic';
-  return players.every((p) => p.isReady && (!needsClass || p.playerClass !== null));
+  if (!players.every((p) => p.isReady && (!needsClass || p.playerClass !== null))) return false;
+  return teamSetupError(room) === null;
 }
 
 const BOT_NAMES = ['Гоблин-помощник', 'Мудрый Сова', 'Храбрый Ёж', 'Хитрый Лис', 'Сонный Кот', 'Быстрый Заяц', 'Мрачный Ворон'];
@@ -319,6 +402,8 @@ export function addBot(roomCode: string): GameState | null {
   bot.playerClass = availableClass;
   bot.isReady = true;
   bot.isBot = true;
+  // Teams-mode: seat the bot in the smallest team.
+  if (state.teamMode === 'teams') bot.teamId = smallestTeam(state)?.id;
 
   state.players[botId] = bot;
   return state;

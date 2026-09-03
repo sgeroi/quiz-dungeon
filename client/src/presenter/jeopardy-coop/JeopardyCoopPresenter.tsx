@@ -68,7 +68,7 @@ interface JCoopSnapshot {
 
 const VALUES: JCoopValue[] = [100, 200, 300, 400, 500];
 const LETTERS = ['A', 'B', 'C', 'D'];
-const MODE = GAME_MODES.find((m) => m.id === 'jeopardy-coop');
+const MODE = GAME_MODES.find((m) => m.id === 'jeopardy');
 const MODE_NAME = MODE?.name ?? 'Своя игра (Босс)';
 const MODE_EMOJI = MODE?.emoji ?? '🐲';
 

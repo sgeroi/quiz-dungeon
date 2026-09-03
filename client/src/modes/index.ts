@@ -7,6 +7,7 @@ import type { GameMode } from '../types';
 import MillionaireScreen from './millionaire/MillionaireScreen';
 import BucketsScreen from './buckets/BucketsScreen';
 import SpyScreen from './spy/SpyScreen';
+import JeopardyScreen from './jeopardy/JeopardyScreen';
 import JeopardyCompScreen from './jeopardy-comp/JeopardyCompScreen';
 import JeopardyCoopScreen from './jeopardy-coop/JeopardyCoopScreen';
 import SpeedScreen from './speed/SpeedScreen';
@@ -17,6 +18,7 @@ export const MODE_SCREENS: Partial<Record<GameMode, ComponentType>> = {
   millionaire:   MillionaireScreen,
   buckets:       BucketsScreen,
   spy:           SpyScreen,
+  jeopardy:      JeopardyScreen,
   'jeopardy-comp': JeopardyCompScreen,
   'jeopardy-coop': JeopardyCoopScreen,
   speed:         SpeedScreen,

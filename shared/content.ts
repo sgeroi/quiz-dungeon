@@ -24,7 +24,7 @@ export interface SimpleQuestionsData {
   questions: SimpleQuestion[];
 }
 
-/** Сетка «Своей игры»: темы × стоимости 100..500. Используется в: jeopardy-comp, jeopardy-coop. */
+/** Сетка «Своей игры»: темы × стоимости 100..500. Используется в: jeopardy (mode 'jeopardy'; старые jeopardy-comp/jeopardy-coop мигрируются в него). */
 export interface JeopardyCellData {
   value: number; // 100, 200, 300, 400, 500
   text: string;
@@ -81,6 +81,7 @@ export interface ContentPack {
 export const CONTENT_KIND_BY_MODE: Record<GameMode, ContentData['kind']> = {
   'classic': 'simple',
   'millionaire': 'simple',
+  'jeopardy': 'jeopardy',
   'topic-split': 'simple',
   'jeopardy-comp': 'jeopardy',
   'jeopardy-coop': 'jeopardy',

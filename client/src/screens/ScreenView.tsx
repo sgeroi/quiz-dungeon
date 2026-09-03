@@ -5,7 +5,8 @@ import { socket } from '../socket';
 import { GAME_MODES } from '../types';
 import QpHeader from '../components/QpHeader';
 import { PRESENTER_SCREENS } from '../presenter';
-import DefaultPresenter, { PresenterPlayerBoard, pickScores } from '../presenter/DefaultPresenter';
+import DefaultPresenter, { PresenterPlayerBoard, PresenterTeamBoard, pickScores, teamTotals } from '../presenter/DefaultPresenter';
+import { TEAM_MODE_INFO } from '../types';
 
 /**
  * TV / projector view (#/screen/CODE). Joins the room as a "screen" — not a player —
@@ -16,6 +17,7 @@ export default function ScreenView({ code }: { code: string }) {
   const gameState = useStore((s) => s.gameState);
   const error = useStore((s) => s.error);
   const joinScreen = useStore((s) => s.joinScreen);
+  const gameOver = useStore((s) => s.gameOver);
 
   useEffect(() => {
     // Initial connect is handled by the store's `connect` listener (it reads the
@@ -119,6 +121,9 @@ export default function ScreenView({ code }: { code: string }) {
               <div className="text-[22px] font-bold uppercase tracking-widest text-[var(--color-dungeon-muted)] mb-2">Игра</div>
               <div className="text-[44px] font-black leading-tight">{modeInfo.emoji} {modeInfo.name}</div>
               <div className="text-[24px] font-semibold text-[var(--color-dungeon-muted)] mt-2 leading-snug">{modeInfo.description}</div>
+              <div className="text-[26px] font-bold text-[var(--color-dungeon-gold)] mt-3">
+                {TEAM_MODE_INFO[gameState.teamMode ?? 'coop'].emoji} {TEAM_MODE_INFO[gameState.teamMode ?? 'coop'].name}
+              </div>
             </div>
           </div>
         </div>
@@ -128,7 +133,23 @@ export default function ScreenView({ code }: { code: string }) {
 
   if (phase === 'victory' || phase === 'defeat') {
     const isVictory = phase === 'victory';
-    const scores = pickScores(gameState);
+    const stats = gameOver?.stats;
+    const teamMode = stats?.teamMode ?? gameState.teamMode ?? 'coop';
+    const isTeams = teamMode === 'teams' && (gameState.teams?.length ?? 0) > 0;
+    const scores = stats?.scores ?? pickScores(gameState);
+    const teamScores = isTeams ? (stats?.teamScores ?? teamTotals(gameState)) : null;
+    const winnerTeam = isTeams
+      ? gameState.teams.find((t) => t.id === (stats?.winnerTeamId ?? (teamScores ? Object.entries(teamScores).sort((a, b) => b[1] - a[1])[0]?.[0] : undefined)))
+      : undefined;
+    const winnerPlayer = teamMode === 'ffa'
+      ? (stats?.winnerPlayerId ? gameState.players[stats.winnerPlayerId] : scores ? players.slice().sort((a, b) => (scores[b.id] ?? 0) - (scores[a.id] ?? 0))[0] : undefined)
+      : undefined;
+    const headline = winnerTeam
+      ? `Победили ${winnerTeam.emoji} ${winnerTeam.name}!`
+      : winnerPlayer
+        ? `🥇 ${winnerPlayer.name}`
+        : isVictory ? 'ПОБЕДА!' : 'ПОРАЖЕНИЕ';
+    const headlineColor = winnerTeam ? winnerTeam.color : isVictory || winnerPlayer ? 'var(--color-dungeon-gold)' : '#FF4848';
     return (
       <Shell code={gameState.roomCode}>
         <div className="flex-1 flex flex-col gap-10 px-16 pb-12">
@@ -137,11 +158,13 @@ export default function ScreenView({ code }: { code: string }) {
               <div className="text-[28px] font-bold uppercase tracking-widest text-[var(--color-dungeon-muted)]">
                 {modeInfo.emoji} {modeInfo.name}
               </div>
-              <div className={`text-[120px] leading-none font-black ${isVictory ? 'text-[var(--color-dungeon-gold)]' : 'text-[#FF4848]'}`}>
-                {isVictory ? 'ПОБЕДА!' : 'ПОРАЖЕНИЕ'}
+              <div className="text-[110px] leading-none font-black" style={{ color: headlineColor }}>
+                {headline}
               </div>
               <div className="text-[30px] font-semibold text-[var(--color-dungeon-muted)] mt-2">
-                {isVictory ? 'Отлично сыграли!' : 'В следующий раз повезёт больше.'} Пройдено {gameState.currentFloor}/{gameState.totalFloors}.
+                {winnerTeam || winnerPlayer
+                  ? `${TEAM_MODE_INFO[teamMode].emoji} ${TEAM_MODE_INFO[teamMode].name}`
+                  : `${isVictory ? 'Отлично сыграли!' : 'В следующий раз повезёт больше.'} Пройдено ${gameState.currentFloor}/${gameState.totalFloors}.`}
               </div>
             </div>
             <div className="flex items-center gap-6">
@@ -156,7 +179,11 @@ export default function ScreenView({ code }: { code: string }) {
           </div>
           <div>
             <h2 className="text-[40px] font-black mb-5">Итоговое табло</h2>
-            <PresenterPlayerBoard players={players} scores={scores} showAnswered={false} />
+            {isTeams ? (
+              <PresenterTeamBoard teams={gameState.teams} players={players} teamScores={teamScores} winnerTeamId={winnerTeam?.id ?? null} />
+            ) : (
+              <PresenterPlayerBoard players={players} scores={scores} showAnswered={false} />
+            )}
           </div>
         </div>
       </Shell>

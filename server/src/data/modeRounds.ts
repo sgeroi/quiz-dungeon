@@ -134,6 +134,7 @@ export function getRoundsForMode(mode: GameMode): RoundParams[] {
     case 'classic':       return DEFAULT_ROUNDS;
     case 'millionaire':   return MILLIONAIRE;
     case 'topic-split':   return TOPIC_SPLIT;
+    case 'jeopardy':      return JEOPARDY_COMP;
     case 'jeopardy-comp': return JEOPARDY_COMP;
     case 'jeopardy-coop': return JEOPARDY_COOP;
     case 'speed':         return SPEED;

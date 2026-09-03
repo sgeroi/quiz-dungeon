@@ -9,6 +9,7 @@ import type { GameMode } from '../types';
 import ClassicPresenter from './classic/ClassicPresenter';
 import MillionairePresenter from './millionaire/MillionairePresenter';
 import TopicSplitPresenter from './topic-split/TopicSplitPresenter';
+import JeopardyPresenter from './jeopardy/JeopardyPresenter';
 import JeopardyCompPresenter from './jeopardy-comp/JeopardyCompPresenter';
 import JeopardyCoopPresenter from './jeopardy-coop/JeopardyCoopPresenter';
 import SpeedPresenter from './speed/SpeedPresenter';
@@ -21,6 +22,7 @@ export const PRESENTER_SCREENS: Partial<Record<GameMode, ComponentType>> = {
   'classic': ClassicPresenter,
   'millionaire': MillionairePresenter,
   'topic-split': TopicSplitPresenter,
+  'jeopardy': JeopardyPresenter,
   'jeopardy-comp': JeopardyCompPresenter,
   'jeopardy-coop': JeopardyCoopPresenter,
   'speed': SpeedPresenter,

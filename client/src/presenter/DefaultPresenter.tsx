@@ -1,7 +1,8 @@
 import { useMemo } from 'react';
 import { useStore } from '../store';
 import { GAME_MODES } from '../types';
-import type { GameState, Player } from '../types';
+import type { GameState, Player, Team } from '../types';
+import TeamBadge from '../components/TeamBadge';
 
 /**
  * Generic TV presenter used for any mode without a dedicated presenter.
@@ -14,15 +15,45 @@ const OPTION_LETTERS = ['A', 'B', 'C', 'D', 'E', 'F'];
 
 interface ModeSnapshotLike {
   scores?: Record<string, number>;
+  teamScores?: Record<string, number>;
   revealCorrectIndex?: number | null;
   round?: number;
   total?: number;
 }
 
+const SNAPSHOT_KEYS = ['speed', 'jeopardy', 'jcoop', 'topicSplit', 'rpgr', 'spy', 'millionaire', 'buckets', 'petersburg'];
+
+/** Team scores exposed by mode snapshots (teams-mode). */
+export function pickTeamScores(gs: GameState): Record<string, number> | null {
+  const any = gs as unknown as Record<string, ModeSnapshotLike | undefined>;
+  for (const key of SNAPSHOT_KEYS) {
+    const s = any[key];
+    if (s && s.teamScores && typeof s.teamScores === 'object') return s.teamScores;
+  }
+  return null;
+}
+
+/**
+ * Score per team: `teamScores` from the snapshot when present, otherwise the sum
+ * of members' personal scores (pickScores). null when neither is available.
+ */
+export function teamTotals(gs: GameState): Record<string, number> | null {
+  const direct = pickTeamScores(gs);
+  if (direct) return direct;
+  const scores = pickScores(gs);
+  if (!scores) return null;
+  const out: Record<string, number> = {};
+  for (const t of gs.teams ?? []) out[t.id] = 0;
+  for (const p of Object.values(gs.players)) {
+    if (p.teamId) out[p.teamId] = (out[p.teamId] ?? 0) + (scores[p.id] ?? 0);
+  }
+  return out;
+}
+
 /** Scores exposed by mode snapshots mirrored onto gameState (speed, jeopardy, ...). */
 export function pickScores(gs: GameState): Record<string, number> | null {
   const any = gs as unknown as Record<string, ModeSnapshotLike | undefined>;
-  for (const key of ['speed', 'jeopardy', 'jcoop', 'topicSplit', 'rpgr', 'spy']) {
+  for (const key of SNAPSHOT_KEYS) {
     const s = any[key];
     if (s && s.scores && typeof s.scores === 'object') return s.scores;
   }
@@ -135,14 +166,77 @@ export function PresenterPlayerBoard({
   );
 }
 
+/** Team leaderboard for the TV (teams-mode): colour, name, members, total. */
+export function PresenterTeamBoard({
+  teams,
+  players,
+  teamScores,
+  winnerTeamId,
+}: {
+  teams: Team[];
+  players: Player[];
+  teamScores: Record<string, number> | null;
+  winnerTeamId?: string | null;
+}) {
+  const sorted = useMemo(() => {
+    const list = [...teams];
+    if (teamScores) list.sort((a, b) => (teamScores[b.id] ?? 0) - (teamScores[a.id] ?? 0));
+    return list;
+  }, [teams, teamScores]);
+  const topId = winnerTeamId ?? (teamScores && sorted[0] ? sorted[0].id : null);
+
+  return (
+    <div className="grid gap-4" style={{ gridTemplateColumns: `repeat(${Math.min(4, Math.max(1, sorted.length))}, minmax(0, 1fr))` }}>
+      {sorted.map((t) => {
+        const members = players.filter((p) => p.teamId === t.id);
+        const isTop = topId === t.id;
+        return (
+          <div
+            key={t.id}
+            className="rounded-3xl px-6 py-4 flex flex-col gap-3 border"
+            style={{ backgroundColor: `${t.color}1f`, borderColor: isTop ? t.color : `${t.color}55`, boxShadow: isTop ? `0 0 40px ${t.color}55` : undefined }}
+          >
+            <div className="flex items-center justify-between gap-3">
+              <TeamBadge team={t} size="lg" />
+              {teamScores && (
+                <div className="text-[44px] font-black tabular-nums leading-none" style={{ color: t.color }}>
+                  {teamScores[t.id] ?? 0}
+                </div>
+              )}
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {members.length === 0 ? (
+                <span className="text-[20px] font-semibold text-white/40">пусто</span>
+              ) : (
+                members.map((p) => (
+                  <span key={p.id} className={`rounded-full bg-black/30 px-3 py-1 text-[20px] font-bold ${!p.isAlive ? 'opacity-40 line-through' : ''}`}>
+                    {p.isBot ? '🤖 ' : ''}{p.name}
+                  </span>
+                ))
+              )}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/** Player or team board depending on gameState.teamMode. */
+export function PresenterBoard({ gs, showAnswered }: { gs: GameState; showAnswered: boolean }) {
+  const players = Object.values(gs.players);
+  if (gs.teamMode === 'teams' && (gs.teams?.length ?? 0) > 0) {
+    return <PresenterTeamBoard teams={gs.teams} players={players} teamScores={teamTotals(gs)} />;
+  }
+  return <PresenterPlayerBoard players={players} scores={pickScores(gs)} showAnswered={showAnswered} />;
+}
+
 export default function DefaultPresenter() {
   const gameState = useStore((s) => s.gameState);
   if (!gameState) return null;
 
   const modeInfo = GAME_MODES.find((m) => m.id === (gameState.gameMode ?? 'classic')) ?? GAME_MODES[0];
-  const players = Object.values(gameState.players);
   const question = gameState.currentQuestion;
-  const scores = pickScores(gameState);
   const reveal = revealIndex(gameState);
   const floor = gameState.floors?.[gameState.currentFloor - 1];
   const monster = floor?.monster;
@@ -235,8 +329,8 @@ export default function DefaultPresenter() {
         )}
       </div>
 
-      {/* Bottom: player board */}
-      <PresenterPlayerBoard players={players} scores={scores} showAnswered={gameState.phase === 'answering' || gameState.phase === 'question'} />
+      {/* Bottom: player board (per-team in teams-mode) */}
+      <PresenterBoard gs={gameState} showAnswered={gameState.phase === 'answering' || gameState.phase === 'question'} />
     </div>
   );
 }

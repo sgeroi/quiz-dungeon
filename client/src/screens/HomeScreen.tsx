@@ -114,7 +114,7 @@ export default function HomeScreen() {
       <div className="rounded-3xl neon-pink bg-[var(--color-dungeon-surface)]/60 p-4 sm:p-6">
         <div className="flex items-baseline justify-between mb-4">
           <h2 className="text-2xl sm:text-3xl font-extrabold">Выбери игру</h2>
-          <span className="text-sm font-semibold text-[var(--color-dungeon-gold)]">{GAME_MODES.length} режимов</span>
+          <span className="text-sm font-semibold text-[var(--color-dungeon-gold)]">{GAME_MODES.length} игр</span>
         </div>
         <GameModeGrid
           selected={selectedMode}

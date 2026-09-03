@@ -5,6 +5,7 @@ import type { GameMode } from '../types';
 const COVERS: Record<GameMode, string> = {
   'classic':       'linear-gradient(135deg,#6F2BD9 0%,#DB3397 100%)',
   'millionaire':   'linear-gradient(135deg,#FFB56B 0%,#FF6F6F 100%)',
+  'jeopardy':      'linear-gradient(135deg,#FF3CAE 0%,#853CB5 100%)',
   'topic-split':   'linear-gradient(135deg,#75BFFF 0%,#6937d2 100%)',
   'jeopardy-comp': 'linear-gradient(135deg,#FF3CAE 0%,#853CB5 100%)',
   'jeopardy-coop': 'linear-gradient(135deg,#8DFF85 0%,#05DF72 100%)',

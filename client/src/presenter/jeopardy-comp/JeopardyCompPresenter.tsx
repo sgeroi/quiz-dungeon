@@ -43,7 +43,7 @@ interface JeopardyPublic {
 }
 
 const LETTERS = ['A', 'B', 'C', 'D', 'E', 'F'];
-const MODE = GAME_MODES.find((m) => m.id === 'jeopardy-comp');
+const MODE = GAME_MODES.find((m) => m.id === 'jeopardy');
 const MODE_NAME = MODE?.name ?? 'Своя игра (PvP)';
 const MODE_EMOJI = MODE?.emoji ?? '🎲';
 

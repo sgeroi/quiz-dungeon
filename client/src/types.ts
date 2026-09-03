@@ -8,6 +8,7 @@ export type WhoAnswers = 'everyone' | 'captain' | 'sacrifice' | 'chain';
 export type GameMode =
   | 'classic'
   | 'millionaire'
+  | 'jeopardy'
   | 'topic-split'
   | 'jeopardy-comp'
   | 'jeopardy-coop'
@@ -24,18 +25,73 @@ export interface GameModeInfo {
   description: string;
 }
 
+/** Видимый список игр. Скрытые режимы (topic-split, speed, rpg-rewards, jeopardy-comp, jeopardy-coop) остаются в GameMode, но в UI не показываются. */
 export const GAME_MODES: GameModeInfo[] = [
-  { id: 'classic',       name: 'RPG-подземелье',    emoji: '⚔️', description: 'Классика. 8 этажей, разные механики, способности классов.' },
-  { id: 'millionaire',   name: 'Кто хочет стать миллионером', emoji: '💰', description: 'Команда идёт по уровням сложности. 30 сек на вопрос, 3 подсказки.' },
-  { id: 'topic-split',   name: 'Темы по группам',   emoji: '📚', description: 'Игроки выбирают темы. Внутри группы — общение, между — изоляция.' },
-  { id: 'jeopardy-comp', name: 'Своя игра (PvP)',   emoji: '🎲', description: 'Сетка тем и стоимостей. Кто первый — тот и забирает очки.' },
-  { id: 'jeopardy-coop', name: 'Своя игра (Босс)',  emoji: '🐲', description: 'Кооп против босса. Чем дороже вопрос — тем жёстче ограничения.' },
-  { id: 'speed',         name: 'На скорость',       emoji: '⚡', description: 'Кто быстрее ответил — тот сильнее ударил. Очки + урон за скорость.' },
-  { id: 'petersburg',    name: 'Санкт-Петербург',   emoji: '🎬', description: 'Каждый видит свой фрагмент. Капитан собирает ответ.' },
-  { id: 'buckets',       name: 'Сортировка',        emoji: '🪣', description: 'У каждого своя корзина. Раскидывай предметы по признакам.' },
-  { id: 'rpg-rewards',   name: 'RPG: Награды',      emoji: '🎁', description: 'Без способностей. Между раундами выбираешь награды для команды.' },
-  { id: 'spy',           name: 'Квиз-мафия',        emoji: '🕵️', description: 'Один из вас — шпион. Видит ответ и набирает очки за неправильный.' },
+  { id: 'classic',     name: 'RPG Квиз-данжен',              emoji: '⚔️', description: 'Этажи, монстры и способности классов. Отвечай верно — бей сильнее.' },
+  { id: 'millionaire', name: 'Кто хочет стать миллионером', emoji: '💰', description: '15 вопросов по нарастающей, 3 подсказки, 30 секунд на ответ.' },
+  { id: 'jeopardy',    name: 'Своя игра',                    emoji: '🎲', description: 'Сетка тем и стоимостей. Выбирай ячейку, жми кнопку, забирай очки.' },
+  { id: 'buckets',     name: 'Сортировка',                   emoji: '🪣', description: 'Раскидывай предметы по корзинам быстрее всех.' },
+  { id: 'spy',         name: 'Квиз-мафия',                   emoji: '🕵️', description: 'Один из вас — шпион и играет против всех. Вычислите его.' },
+  { id: 'petersburg',  name: 'Угадай фильм',                 emoji: '🎬', description: 'Каждый видит своего актёра. Соберите название фильма вместе.' },
 ];
+
+// ==================== TEAM MODES ====================
+
+export type TeamMode = 'ffa' | 'teams' | 'coop';
+
+export interface Team {
+  /** 'A' | 'B' | 'C' | 'D' */
+  id: string;
+  name: string;
+  emoji: string;
+  color: string;
+}
+
+export const DEFAULT_TEAMS: Team[] = [
+  { id: 'A', name: 'Красные', emoji: '🔴', color: '#FF4848' },
+  { id: 'B', name: 'Синие',   emoji: '🔵', color: '#75BFFF' },
+  { id: 'C', name: 'Зелёные', emoji: '🟢', color: '#8DFF85' },
+  { id: 'D', name: 'Жёлтые',  emoji: '🟡', color: '#FFDB10' },
+];
+
+export const TEAM_MODE_INFO: Record<TeamMode, { name: string; emoji: string; description: string }> = {
+  ffa:   { name: 'Каждый сам за себя', emoji: '🥇', description: 'Личный зачёт, побеждает лучший' },
+  teams: { name: 'Команда на команду', emoji: '⚔️', description: '2–4 команды, игроки сами выбирают свою' },
+  coop:  { name: 'Все в одной команде', emoji: '🤝', description: 'Вся пати против игры' },
+};
+
+/** Какие форматы доступны в каждой игре (порядок = порядок плиток в лобби). */
+export const TEAM_MODES_BY_GAME: Record<GameMode, TeamMode[]> = {
+  'classic':       ['ffa', 'teams', 'coop'],
+  'millionaire':   ['ffa', 'teams', 'coop'],
+  'jeopardy':      ['ffa', 'teams', 'coop'],
+  'buckets':       ['ffa', 'teams', 'coop'],
+  'spy':           ['ffa', 'coop'],
+  'petersburg':    ['ffa', 'teams', 'coop'],
+  // Скрытые режимы
+  'topic-split':   ['coop'],
+  'speed':         ['ffa', 'coop'],
+  'rpg-rewards':   ['coop'],
+  'jeopardy-comp': ['ffa', 'teams'],
+  'jeopardy-coop': ['coop'],
+};
+
+export const MIN_TEAMS = 2;
+export const MAX_TEAMS = 4;
+
+/** Payload of `game-over(victory, stats)`. Handlers fill the fields relevant to state.teamMode. */
+export interface GameOverStats {
+  teamMode?: TeamMode;
+  /** ffa (и coop, если есть личные очки): playerId -> очки */
+  scores?: Record<string, number>;
+  /** teams: teamId -> очки */
+  teamScores?: Record<string, number>;
+  /** ffa */
+  winnerPlayerId?: string;
+  /** teams */
+  winnerTeamId?: string;
+  [extra: string]: unknown;
+}
 
 export interface RoundParams {
   name: string;
@@ -82,6 +138,8 @@ export interface Player {
   streak: number;
   isBot?: boolean;
   betAmount?: number;
+  /** Команда игрока — только в teamMode 'teams'. */
+  teamId?: string;
   perks?: PerkInstance[];
 }
 
@@ -131,6 +189,10 @@ export interface GameState {
   captainId?: string;
   betPhase?: boolean;
   gameMode?: GameMode;
+  /** Формат игры: личный зачёт / команды / все вместе. По умолчанию 'coop'. */
+  teamMode: TeamMode;
+  /** В teams-режиме 2..4 команды; иначе []. */
+  teams: Team[];
   spyId?: string;
   /** Выбранные контент-паки комнаты (лобби). Нет ключа = builtin-пак режима. */
   contentPacks?: Partial<Record<GameMode, string>>;
@@ -206,6 +268,9 @@ export interface ClientEvents {
   'use-perk': (perkId: PerkId) => void;
   'set-game-mode': (mode: GameMode) => void;
   'set-content-pack': (mode: GameMode, packId: string | null) => void;
+  'set-team-mode': (mode: TeamMode) => void;
+  'set-team-count': (n: 2 | 3 | 4) => void;
+  'join-team': (teamId: string) => void;
   'webrtc-offer': (targetId: string, offer: RTCSessionDescriptionInit) => void;
   'webrtc-answer': (targetId: string, answer: RTCSessionDescriptionInit) => void;
   'webrtc-ice-candidate': (targetId: string, candidate: RTCIceCandidateInit) => void;

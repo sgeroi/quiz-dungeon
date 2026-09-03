@@ -2,22 +2,35 @@ import { useEffect, useState } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
 import { useStore } from '../store';
 import { CLASS_LIST } from '../classData';
-import { GAME_MODES } from '../types';
-import type { PlayerClass, GameMode } from '../types';
+import { GAME_MODES, TEAM_MODES_BY_GAME, TEAM_MODE_INFO } from '../types';
+import type { PlayerClass, GameMode, TeamMode } from '../types';
 import type { ContentPackSummary } from '../content';
 import GameModeGrid from '../components/GameModeGrid';
 import QpHeader from '../components/QpHeader';
+import TeamBadge from '../components/TeamBadge';
+
+const TEAM_MODE_ORDER: TeamMode[] = ['ffa', 'teams', 'coop'];
 
 function packUnit(mode: GameMode): string {
-  if (mode === 'jeopardy-comp' || mode === 'jeopardy-coop') return 'ячеек';
+  if (mode === 'jeopardy' || mode === 'jeopardy-comp' || mode === 'jeopardy-coop') return 'ячеек';
   if (mode === 'buckets') return 'наборов';
   if (mode === 'petersburg') return 'фильмов';
   return 'вопросов';
 }
 
 export default function LobbyScreen() {
-  const { gameState, playerId, selectClass, setReady, startGame, addBot, setGameMode, setContentPack, setInteractive } = useStore();
+  const {
+    gameState, playerId, selectClass, setReady, startGame, addBot, setGameMode, setContentPack, setInteractive,
+    setTeamMode, setTeamCount, joinTeam, error, clearError,
+  } = useStore();
   const currentMode: GameMode = gameState?.gameMode ?? 'classic';
+
+  // Server errors (e.g. «Распределитесь по командам») — show briefly at the bottom.
+  useEffect(() => {
+    if (!error) return;
+    const t = setTimeout(clearError, 5000);
+    return () => clearTimeout(t);
+  }, [error, clearError]);
 
   // Content packs available for the selected mode (GET /api/content?mode=).
   const [packs, setPacks] = useState<ContentPackSummary[]>([]);
@@ -41,7 +54,15 @@ export default function LobbyScreen() {
   const selectedPackId = gameState.contentPacks?.[currentMode] ?? builtinPackId;
   const currentModeInfo = GAME_MODES.find((m) => m.id === currentMode) ?? GAME_MODES[0];
   const needsClass = currentMode === 'classic';
-  const canReady = needsClass ? !!me?.playerClass : true;
+  const teamMode: TeamMode = gameState.teamMode ?? 'coop';
+  const isTeams = teamMode === 'teams';
+  const teams = gameState.teams ?? [];
+  const availableTeamModes = TEAM_MODES_BY_GAME[currentMode] ?? ['coop'];
+  const teamOf = (teamId?: string) => (teamId ? teams.find((t) => t.id === teamId) : undefined);
+  const needsTeam = isTeams && !me?.teamId;
+  const canReady = (needsClass ? !!me?.playerClass : true) && !needsTeam;
+  const nonEmptyTeams = teams.filter((t) => players.some((p) => p.teamId === t.id)).length;
+  const teamsValid = !isTeams || (players.every((p) => !!p.teamId) && nonEmptyTeams >= 2);
   const readyCount = players.filter((p) => p.isReady).length;
   const interactive = !!gameState.interactive;
   const joinUrl = `${window.location.origin}/#/join/${gameState.roomCode}`;
@@ -96,6 +117,7 @@ export default function LobbyScreen() {
                       {p.isBot && <span className="text-[10px] uppercase text-white/70 bg-white/10 px-1.5 py-0.5 rounded-full font-extrabold">бот</span>}
                       <span className="truncate">{p.name}</span>
                       {isMe && <span className="text-xs text-[var(--color-dungeon-gold)]">(ты)</span>}
+                      {isTeams && teamOf(p.teamId) && <TeamBadge team={teamOf(p.teamId)!} size="sm" />}
                     </div>
                     {needsClass && classDef && <div className="text-xs text-[var(--color-dungeon-muted)] font-medium">{classDef.nameRu}</div>}
                   </div>
@@ -236,6 +258,120 @@ export default function LobbyScreen() {
               })}
             </div>
           </div>
+
+          {/* Format: ffa / teams / coop */}
+          <div className="mt-4">
+            <div className="flex items-baseline justify-between mb-2">
+              <div className="text-xs font-bold uppercase tracking-wider text-[var(--color-dungeon-muted)]">Формат</div>
+              <div className="text-xs font-semibold text-[var(--color-dungeon-muted)]">{isHost ? 'выбираешь ты' : 'выбирает хост'}</div>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2" data-testid="team-mode-grid">
+              {TEAM_MODE_ORDER.map((tm) => {
+                const info = TEAM_MODE_INFO[tm];
+                const available = availableTeamModes.includes(tm);
+                const isSel = teamMode === tm;
+                return (
+                  <button
+                    key={tm}
+                    type="button"
+                    data-team-mode={tm}
+                    data-available={available ? '1' : '0'}
+                    disabled={!isHost || !available}
+                    onClick={() => setTeamMode(tm)}
+                    title={available ? info.description : 'Недоступно в этой игре'}
+                    className={`relative text-left rounded-2xl px-3 py-2.5 transition-all ${
+                      isSel
+                        ? 'bg-[var(--color-dungeon-gold)]/12 ring-2 ring-[var(--color-dungeon-gold)] shadow-[0_0_18px_rgba(255,219,16,0.25)]'
+                        : !available
+                          ? 'bg-white/5 opacity-35 cursor-not-allowed'
+                          : isHost
+                            ? 'bg-white/5 hover:bg-white/10 active:scale-[0.98]'
+                            : 'bg-white/5 opacity-50'
+                    }`}
+                  >
+                    <div className={`flex items-center gap-2 ${isSel ? 'pr-14' : ''}`}>
+                      <span className="text-lg">{info.emoji}</span>
+                      <span className="font-bold text-white text-sm leading-tight">{info.name}</span>
+                    </div>
+                    <div className="text-[11px] font-semibold text-[var(--color-dungeon-muted)] mt-1 leading-snug">
+                      {available ? info.description : 'недоступно в этой игре'}
+                    </div>
+                    {isSel && (
+                      <span className="absolute top-2 right-2 rounded-full bg-[var(--color-dungeon-gold)] px-1.5 py-0.5 text-[9px] font-extrabold uppercase text-[var(--color-dungeon-gold-fg)]">
+                        выбран
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+
+            {isTeams && (
+              <div className="mt-3 rounded-2xl bg-white/5 p-3" data-testid="teams-block">
+                <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+                  <div className="text-xs font-bold uppercase tracking-wider text-[var(--color-dungeon-muted)]">
+                    Команды · {isHost ? 'нажми на свою' : 'выбери свою'}
+                  </div>
+                  {isHost && (
+                    <div className="flex items-center gap-1 rounded-full bg-black/30 p-0.5" data-testid="team-count">
+                      {([2, 3, 4] as const).map((n) => (
+                        <button
+                          key={n}
+                          type="button"
+                          onClick={() => setTeamCount(n)}
+                          className={`rounded-full px-3 py-1 text-xs font-extrabold transition-colors ${
+                            teams.length === n
+                              ? 'bg-[var(--color-dungeon-gold)] text-[var(--color-dungeon-gold-fg)]'
+                              : 'text-white/70 hover:bg-white/10'
+                          }`}
+                        >
+                          {n}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <div className={`grid gap-2 ${teams.length >= 3 ? 'grid-cols-2 lg:grid-cols-4' : 'grid-cols-2'}`}>
+                  {teams.map((t) => {
+                    const members = players.filter((p) => p.teamId === t.id);
+                    const mine = me?.teamId === t.id;
+                    return (
+                      <button
+                        key={t.id}
+                        type="button"
+                        data-team-id={t.id}
+                        onClick={() => joinTeam(t.id)}
+                        className={`text-left rounded-2xl p-3 transition-all active:scale-[0.98] border ${
+                          mine ? 'shadow-[0_0_18px_rgba(255,255,255,0.12)]' : 'hover:bg-white/10'
+                        }`}
+                        style={{
+                          backgroundColor: mine ? `${t.color}2b` : `${t.color}12`,
+                          borderColor: mine ? t.color : `${t.color}55`,
+                        }}
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <TeamBadge team={t} size="md" />
+                          <span className="text-xs font-bold text-white/60">{members.length}</span>
+                        </div>
+                        <div className="mt-2 flex flex-col gap-0.5 min-h-[1.25rem]">
+                          {members.length === 0 ? (
+                            <span className="text-[11px] font-semibold text-white/40">пока пусто</span>
+                          ) : (
+                            members.map((p) => (
+                              <span key={p.id} className={`text-xs font-bold truncate ${p.id === playerId ? 'text-[var(--color-dungeon-gold)]' : 'text-white'}`}>
+                                {p.name}{p.id === playerId ? ' (ты)' : ''}
+                              </span>
+                            ))
+                          )}
+                        </div>
+                        {mine && <div className="mt-1.5 text-[10px] font-extrabold uppercase" style={{ color: t.color }}>твоя команда</div>}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
@@ -285,10 +421,24 @@ export default function LobbyScreen() {
           </button>
         )}
         {!canReady && !me.isReady && (
-          <div className="text-center text-[var(--color-dungeon-muted)] text-sm font-semibold">Выбери класс, чтобы отметиться готовым.</div>
+          <div className="text-center text-[var(--color-dungeon-muted)] text-sm font-semibold">
+            {needsTeam ? 'Выбери команду, чтобы отметиться готовым.' : 'Выбери класс, чтобы отметиться готовым.'}
+          </div>
         )}
         {me.isReady && !allReady && (
           <div className="text-center text-[var(--color-dungeon-muted)] text-sm font-semibold">Ждём остальных…</div>
+        )}
+        {allReady && !teamsValid && (
+          <div className="text-center text-[var(--color-dungeon-gold)] text-sm font-semibold">Распределитесь по командам: нужно минимум 2 непустые команды.</div>
+        )}
+        {error && (
+          <div
+            data-testid="lobby-error"
+            onClick={clearError}
+            className="w-full py-2.5 px-4 rounded-2xl bg-[#FF4848]/15 border border-[#FF4848]/40 text-[#FF9A9A] text-sm font-semibold text-center cursor-pointer"
+          >
+            {error}
+          </div>
         )}
         {isHost && allReady && (
           <button onClick={() => startGame()} className="btn-primary w-full py-4 px-6 text-lg animate-pulse">

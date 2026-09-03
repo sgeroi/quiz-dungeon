@@ -41,6 +41,16 @@ const DATA_FILE = path.join(DATA_DIR, 'content.json');
 export const ALL_MODES = Object.keys(CONTENT_KIND_BY_MODE) as GameMode[];
 export const BUILTIN_NAME = 'Стандартный набор';
 
+/**
+ * Legacy jeopardy ids merged into 'jeopardy' (docs/TEAMS.md). Their packs are
+ * migrated on read and never re-seeded; packs of other hidden modes stay in the
+ * file but are not listed without an explicit ?mode=.
+ */
+const LEGACY_JEOPARDY_MODES = new Set<string>(['jeopardy-comp', 'jeopardy-coop']);
+const HIDDEN_MODES = new Set<GameMode>(['topic-split', 'speed', 'rpg-rewards', 'jeopardy-comp', 'jeopardy-coop']);
+const SEEDED_MODES = ALL_MODES.filter((m) => !LEGACY_JEOPARDY_MODES.has(m));
+const COOP_PACK_NAME = 'Набор: Босс';
+
 export function builtinId(mode: GameMode): string {
   return `builtin-${mode}`;
 }
@@ -141,6 +151,7 @@ export function buildBuiltinData(mode: GameMode): ContentData {
       const data: SimpleQuestionsData = { kind: 'simple', topics: [...TOPICS], questions };
       return data;
     }
+    case 'jeopardy':
     case 'jeopardy-comp': {
       const cells: Record<string, JeopardyCellData[]> = {};
       for (const topic of JEOPARDY_GRID.topics) {
@@ -239,9 +250,26 @@ function readPacks(): ContentPack[] {
       packs = [];
     }
   }
-  // Make sure every mode has its builtin pack (first run, or a mode added later).
   let changed = false;
-  for (const mode of ALL_MODES) {
+  // Migration: jeopardy-comp/jeopardy-coop -> single 'jeopardy' mode.
+  for (const p of packs) {
+    if (!LEGACY_JEOPARDY_MODES.has(p.mode)) continue;
+    const wasBuiltin = p.builtin;
+    const legacyMode = p.mode;
+    p.mode = 'jeopardy';
+    if (wasBuiltin && legacyMode === 'jeopardy-comp' && !packs.some((x) => x.id === builtinId('jeopardy'))) {
+      p.id = builtinId('jeopardy');
+    } else if (wasBuiltin) {
+      // builtin-jeopardy-coop (or a second builtin) becomes an ordinary pack.
+      p.id = nanoid(10);
+      p.builtin = false;
+      if (legacyMode === 'jeopardy-coop' && p.name === BUILTIN_NAME) p.name = COOP_PACK_NAME;
+    }
+    p.updatedAt = new Date().toISOString();
+    changed = true;
+  }
+  // Make sure every mode has its builtin pack (first run, or a mode added later).
+  for (const mode of SEEDED_MODES) {
     if (!packs.some((p) => p.id === builtinId(mode))) {
       packs.push(buildBuiltinPack(mode));
       changed = true;
@@ -442,7 +470,7 @@ export function toSummary(pack: ContentPack): ContentPackSummary {
 }
 
 export function listPacks(mode?: GameMode): ContentPackSummary[] {
-  const packs = readPacks().filter((p) => !mode || p.mode === mode);
+  const packs = readPacks().filter((p) => (mode ? p.mode === mode : !HIDDEN_MODES.has(p.mode)));
   // Builtin first, then by name.
   packs.sort((a, b) => {
     if (a.builtin !== b.builtin) return a.builtin ? -1 : 1;
