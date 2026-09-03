@@ -433,6 +433,11 @@ const handler: ModeHandler = {
     });
   },
 
+  // Screen (TV) joined mid-game: state.buckets already carries the public set.
+  onScreenJoin(_io, socket, state) {
+    socket.emit('game-state', state);
+  },
+
   stop(_io, state) {
     clearAllTimers(state.roomCode);
     setsByRoom.delete(state.roomCode);

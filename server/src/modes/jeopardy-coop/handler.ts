@@ -698,6 +698,13 @@ const handler: ModeHandler = {
     });
   },
 
+  // Screen (TV) joined mid-game: state.jcoop snapshot + current comm mask.
+  onScreenJoin(_io, socket, state) {
+    const data = rooms.get(state.roomCode);
+    socket.emit('game-state', state);
+    if (data) socket.emit('mode-jcoop-comm', data.comm);
+  },
+
   stop(_io, state) {
     const data = rooms.get(state.roomCode);
     if (data) clearTimers(data);

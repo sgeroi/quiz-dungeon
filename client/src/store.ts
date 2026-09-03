@@ -28,9 +28,14 @@ interface StoreState {
   chainTurn: ChainTurnData | null;
   chainResult: ChainResultData | null;
 
+  /** true when this tab is a TV screen (#/screen/CODE), not a player. */
+  isScreen: boolean;
+
   setPlayerName: (name: string) => void;
-  createRoom: (mode?: GameMode) => void;
+  createRoom: (mode?: GameMode, opts?: { interactive?: boolean }) => void;
   joinRoom: (code: string) => void;
+  joinScreen: (code: string) => void;
+  setInteractive: (on: boolean) => void;
   selectClass: (playerClass: PlayerClass) => void;
   setReady: () => void;
   submitAnswer: (index: number) => void;
@@ -60,17 +65,27 @@ export const useStore = create<StoreState>((set, get) => ({
   personalResult: null,
   chainTurn: null,
   chainResult: null,
+  isScreen: false,
 
   setPlayerName: (name: string) => set({ playerName: name }),
 
-  createRoom: (mode?: GameMode) => {
+  createRoom: (mode?: GameMode, opts?: { interactive?: boolean }) => {
     const { playerName } = get();
     if (!playerName.trim()) {
       set({ error: 'Введите имя!' });
       return;
     }
-    socket.emit('create-room', playerName.trim(), mode ?? 'classic');
+    socket.emit('create-room', playerName.trim(), mode ?? 'classic', { interactive: !!opts?.interactive });
   },
+
+  joinScreen: (code: string) => {
+    const clean = code.trim().toUpperCase();
+    if (!clean) return;
+    set({ isScreen: true, error: null });
+    socket.emit('join-screen', clean);
+  },
+
+  setInteractive: (on: boolean) => { socket.emit('set-interactive', on); },
 
   joinRoom: (code: string) => {
     const { playerName } = get();
@@ -142,6 +157,16 @@ export const useStore = create<StoreState>((set, get) => ({
 function saveSession(roomCode: string, playerName: string) {
   localStorage.setItem('qd_room', roomCode);
   localStorage.setItem('qd_name', playerName);
+  localStorage.setItem('qd_last_name', playerName);
+}
+
+/** Last used player name (survives session clear) — used to prefill QR auto-join. */
+export function getSavedPlayerName(): string {
+  try {
+    return localStorage.getItem('qd_last_name') ?? localStorage.getItem('qd_name') ?? '';
+  } catch {
+    return '';
+  }
 }
 
 function clearSession() {
@@ -163,9 +188,29 @@ socket.on('connect', () => {
     playerId: socket.id ?? null,
   });
 
+  const hash = window.location.hash;
+  const st = useStore.getState();
+
+  // Screen tab: re-attach as a screen, never as a player (it may share
+  // localStorage with the host's tab, so the player session must be ignored).
+  if (st.isScreen || hash.startsWith('#/screen/')) {
+    const code = hash.startsWith('#/screen/') ? hash.slice('#/screen/'.length).split(/[/?]/)[0] : st.roomCode;
+    if (code) {
+      useStore.setState({ isScreen: true, gameState: null });
+      socket.emit('join-screen', code.toUpperCase());
+    }
+    return;
+  }
+
   // Attempt rejoin on reconnect
   const saved = getSavedSession();
-  if (saved && !useStore.getState().gameState) {
+  if (saved && !st.gameState) {
+    // QR link to a different room: drop the stale session instead of rejoining it.
+    const joinMatch = hash.match(/^#\/join\/([A-Za-z0-9]+)/);
+    if (joinMatch && joinMatch[1].toUpperCase() !== saved.roomCode.toUpperCase()) {
+      clearSession();
+      return;
+    }
     socket.emit('rejoin-room', saved.roomCode, saved.playerName);
   }
 });
@@ -181,9 +226,13 @@ socket.on('room-created', (roomCode: string) => {
 });
 
 socket.on('room-joined', (state: GameState) => {
-  useStore.setState({ gameState: state, roomCode: state.roomCode, error: null });
+  useStore.setState({ gameState: state, roomCode: state.roomCode, error: null, isScreen: false });
   const me = socket.id ? state.players[socket.id] : null;
   if (me) saveSession(state.roomCode, me.name);
+});
+
+socket.on('screen-joined', (state: GameState) => {
+  useStore.setState({ gameState: state, roomCode: state.roomCode, error: null, isScreen: true });
 });
 
 socket.on('game-state', (state: GameState) => {
@@ -203,8 +252,8 @@ socket.on('game-state', (state: GameState) => {
 
 socket.on('error', (message: string) => {
   useStore.setState({ error: message });
-  // If rejoin failed, clear saved session
-  if (message.includes('expired') || message.includes('not found')) {
+  // If rejoin failed, clear saved session (screens have no session to clear)
+  if (!useStore.getState().isScreen && (message.includes('expired') || message.includes('not found'))) {
     clearSession();
   }
 });
@@ -217,7 +266,7 @@ socket.on('timer-tick', (seconds: number) => {
 });
 
 socket.on('game-over', () => {
-  clearSession();
+  if (!useStore.getState().isScreen) clearSession();
 });
 
 socket.on('left-room', () => {

@@ -686,6 +686,13 @@ const handler: ModeHandler = {
     });
   },
 
+  // Screen (TV) joined mid-game: state.rpgr mirror + dedicated snapshot event.
+  onScreenJoin(_io, socket, state) {
+    const s = getRState(state);
+    socket.emit('game-state', state);
+    if (s) socket.emit('mode-rpgr-state' as any, snapshot(state, s));
+  },
+
   stop(_io, state) {
     clearTimer(state.roomCode);
     RPGR_STATES.delete(state.roomCode);

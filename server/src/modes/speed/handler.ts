@@ -319,6 +319,12 @@ const handler: ModeHandler = {
     });
   },
 
+  // Screen (TV) joined mid-game: the snapshot lives on state.speed (mirrored by
+  // the last pushState), so re-sending game-state to this socket is enough.
+  onScreenJoin(_io, socket, state) {
+    socket.emit('game-state', state);
+  },
+
   stop(_io, state) {
     const data = rooms.get(state.roomCode);
     if (data) clearTimers(data);

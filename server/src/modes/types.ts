@@ -12,4 +12,12 @@ export interface ModeHandler {
 
   /** Optional: cleanup on game end / room close. */
   stop?: (io: Server, state: GameState) => void;
+
+  /**
+   * Optional: a screen (TV presenter, not a player) joined the room mid-game.
+   * Send it the current mode snapshot addressed to `socket` only — the same
+   * room-broadcast payloads the mode normally emits (never personal data or
+   * un-revealed correct answers). If absent, index.ts just sends `game-state`.
+   */
+  onScreenJoin?: (io: Server, socket: Socket, state: GameState) => void;
 }

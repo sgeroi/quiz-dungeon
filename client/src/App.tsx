@@ -5,6 +5,9 @@ import LobbyScreen from './screens/LobbyScreen';
 import GameScreen from './screens/GameScreen';
 import ResultScreen from './screens/ResultScreen';
 import AdminScreen from './screens/AdminScreen';
+import ScreenView from './screens/ScreenView';
+import ScreenEntry from './screens/ScreenEntry';
+import JoinScreen from './screens/JoinScreen';
 import VideoChat from './components/VideoChat';
 import { MODE_SCREENS } from './modes';
 
@@ -25,7 +28,23 @@ function App() {
   const phase = gameState?.phase ?? null;
   const [showVideo, setShowVideo] = useState(true);
 
+  // #/join/CODE: once we're in the room, drop the hash so a refresh doesn't re-join.
+  const joinMatch = hash.match(/^#\/join\/([A-Za-z0-9]+)/);
+  const joinCode = joinMatch ? joinMatch[1].toUpperCase() : null;
+  useEffect(() => {
+    if (joinCode && gameState) {
+      window.history.replaceState(null, '', window.location.pathname + window.location.search);
+      window.dispatchEvent(new HashChangeEvent('hashchange'));
+    }
+  }, [joinCode, gameState]);
+
   if (hash === '#/admin') return <AdminScreen />;
+  if (hash === '#/screen' || hash === '#/screen/') return <ScreenEntry />;
+  if (hash.startsWith('#/screen/')) {
+    const code = hash.slice('#/screen/'.length).split(/[/?]/)[0];
+    return code ? <ScreenView code={code} /> : <ScreenEntry />;
+  }
+  if (joinCode && !gameState) return <JoinScreen code={joinCode} />;
 
   const handleLeave = () => {
     const inLobby = phase === 'lobby' || phase === 'class-select';
@@ -42,6 +61,8 @@ function App() {
 
   const gameMode = gameState?.gameMode ?? 'classic';
   const ModeScreen = MODE_SCREENS[gameMode];
+  // Interactive party: players are on their phones without camera/mic — no video panel at all.
+  const interactive = !!gameState?.interactive;
 
   let screen: React.ReactNode;
   if (!phase) screen = <HomeScreen />;
@@ -67,8 +88,8 @@ function App() {
       <div className="flex-1 overflow-y-auto min-w-0">
         {screen}
       </div>
-      {/* Right: video panel — hidden on mobile, toggle button */}
-      {showVideo ? (
+      {/* Right: video panel — hidden on mobile, toggle button. Not rendered in interactive parties. */}
+      {interactive ? null : showVideo ? (
         <VideoChat
           players={gameState!.players}
           myId={useStore.getState().playerId ?? ''}

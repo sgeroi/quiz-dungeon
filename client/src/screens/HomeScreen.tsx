@@ -10,6 +10,7 @@ export default function HomeScreen() {
   const [selectedMode, setSelectedMode] = useState<GameMode | null>(null);
   const [showJoin, setShowJoin] = useState(false);
   const [code, setCode] = useState('');
+  const [interactive, setInteractive] = useState(false);
 
   const selectedInfo = selectedMode ? GAME_MODES.find((m) => m.id === selectedMode) : null;
 
@@ -60,7 +61,7 @@ export default function HomeScreen() {
           )}
 
           <button
-            onClick={() => createRoom(selectedMode ?? undefined)}
+            onClick={() => createRoom(selectedMode ?? undefined, { interactive })}
             className="btn-primary w-full py-4 px-5 text-lg"
           >
             {selectedInfo ? `Создать пати · ${selectedInfo.name}` : 'Создать пати'}
@@ -68,6 +69,23 @@ export default function HomeScreen() {
           <div className="text-center text-xs text-[var(--color-dungeon-muted)] mt-2 mb-3 font-medium">
             {selectedInfo ? selectedInfo.description : 'Игру можно выбрать ниже или уже в пати.'}
           </div>
+
+          <label className={`flex items-start gap-3 rounded-2xl px-4 py-3 mb-3 cursor-pointer transition-colors border ${
+            interactive ? 'bg-[var(--color-dungeon-gold)]/10 border-[var(--color-dungeon-gold)]/50' : 'bg-white/5 border-white/10 hover:bg-white/[0.08]'
+          }`}>
+            <input
+              type="checkbox"
+              checked={interactive}
+              onChange={(e) => setInteractive(e.target.checked)}
+              className="mt-1 h-4 w-4 accent-[var(--color-dungeon-gold)] cursor-pointer"
+            />
+            <span className="min-w-0">
+              <span className="block text-sm font-bold text-white">Интерактив: вход по QR</span>
+              <span className="block text-xs text-[var(--color-dungeon-muted)] font-medium leading-snug">
+                Без камеры и микрофона. Игроки заходят с телефонов по QR, вопросы можно вывести на ТВ.
+              </span>
+            </span>
+          </label>
 
           <button
             onClick={() => setShowJoin((v) => !v)}
@@ -108,8 +126,11 @@ export default function HomeScreen() {
         />
       </div>
 
-      <div className="mt-6 text-center text-xs text-[var(--color-dungeon-muted)] font-medium">
-        Квиз, плиз! Хоум · игра для компании на своих экранах
+      <div className="mt-6 flex flex-col items-center gap-2 text-center text-xs text-[var(--color-dungeon-muted)] font-medium">
+        <a href="#/screen" className="text-sm font-bold text-white/70 hover:text-white transition-colors">
+          📺 Открыть экран для ТВ
+        </a>
+        <span>Квиз, плиз! Хоум · игра для компании на своих экранах</span>
       </div>
     </div>
   );

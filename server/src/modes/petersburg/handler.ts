@@ -329,6 +329,12 @@ const handler: ModeHandler = {
     });
   },
 
+  // Screen (TV) joined mid-game: state.petersburg is the public snapshot.
+  // Actor cards are personal (mode-petersburg-actor) and are NOT sent to screens.
+  onScreenJoin(_io, socket, state) {
+    socket.emit('game-state', state);
+  },
+
   stop(_io, state) {
     const data = rooms.get(state.roomCode);
     if (data) clearTimers(data);

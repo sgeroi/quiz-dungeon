@@ -3,6 +3,8 @@ import { getPack } from '../data/contentStore.ts';
 
 const rooms = new Map<string, GameState>();
 const playerToRoom = new Map<string, string>();
+// Screens (TV role) are NOT players: separate map so getRoomByPlayer() stays null for them.
+const screenToRoom = new Map<string, string>();
 
 // Disconnected players awaiting rejoin (roomCode -> { playerName -> Player })
 const disconnectedPlayers = new Map<string, Map<string, { player: Player; timeout: ReturnType<typeof setTimeout> }>>();
@@ -36,7 +38,11 @@ function makePlayer(id: string, name: string): Player {
   };
 }
 
-export function createRoom(hostSocketId: string, hostName: string, mode: GameMode = 'classic'): GameState {
+export interface CreateRoomOpts {
+  interactive?: boolean;
+}
+
+export function createRoom(hostSocketId: string, hostName: string, mode: GameMode = 'classic', opts: CreateRoomOpts = {}): GameState {
   const roomCode = generateRoomCode();
   const host = makePlayer(hostSocketId, hostName);
 
@@ -53,6 +59,8 @@ export function createRoom(hostSocketId: string, hostName: string, mode: GameMod
     currentQuestion: null,
     lastResults: null,
     gameMode: mode,
+    interactive: !!opts.interactive,
+    screenIds: [],
   };
 
   rooms.set(roomCode, state);
@@ -112,7 +120,18 @@ export function getRoomByPlayer(socketId: string): GameState | undefined {
   return code ? rooms.get(code) : undefined;
 }
 
-export function removePlayer(socketId: string): { room: GameState | null; deleted: boolean } {
+/** Drop a room and forget every screen attached to it. Returns the screen socket ids. */
+function destroyRoom(code: string): string[] {
+  rooms.delete(code);
+  const screens: string[] = [];
+  for (const [sid, c] of screenToRoom) {
+    if (c === code) screens.push(sid);
+  }
+  for (const sid of screens) screenToRoom.delete(sid);
+  return screens;
+}
+
+export function removePlayer(socketId: string): { room: GameState | null; deleted: boolean; roomCode?: string } {
   const code = playerToRoom.get(socketId);
   if (!code) return { room: null, deleted: false };
 
@@ -139,11 +158,11 @@ export function removePlayer(socketId: string): { room: GameState | null; delete
   delete state.players[socketId];
 
   if (Object.keys(state.players).length === 0 && !disconnectedPlayers.has(code)) {
-    rooms.delete(code);
-    return { room: null, deleted: true };
+    destroyRoom(code);
+    return { room: null, deleted: true, roomCode: code };
   }
 
-  return { room: state, deleted: false };
+  return { room: state, deleted: false, roomCode: code };
 }
 
 // Explicit leave: remove from room without saving to disconnectedPlayers.
@@ -162,7 +181,7 @@ export function leaveRoom(socketId: string): { room: GameState | null; deleted: 
 
   // If host leaves, close the room for everyone.
   if (wasHost) {
-    rooms.delete(code);
+    destroyRoom(code);
     const dc = disconnectedPlayers.get(code);
     if (dc) {
       for (const [, entry] of dc) clearTimeout(entry.timeout);
@@ -172,10 +191,53 @@ export function leaveRoom(socketId: string): { room: GameState | null; deleted: 
   }
 
   if (Object.keys(state.players).length === 0 && !disconnectedPlayers.has(code)) {
-    rooms.delete(code);
+    destroyRoom(code);
     return { room: null, deleted: true, wasHost: false };
   }
   return { room: state, deleted: false, wasHost: false };
+}
+
+// ==================== INTERACTIVE / SCREENS ====================
+
+/** Host-only, lobby-only: toggle interactive mode (QR join, no video/mic). */
+export function setInteractive(socketId: string, on: boolean): GameState | null {
+  const state = getRoomByPlayer(socketId);
+  if (!state) return null;
+  if (state.hostId !== socketId) return null;
+  if (state.phase !== 'lobby') return null;
+  state.interactive = !!on;
+  return state;
+}
+
+/** Attach a screen (TV) socket to a room. Screens are not players. Any phase is allowed. */
+export function addScreen(roomCode: string, socketId: string): GameState | null {
+  const code = roomCode.toUpperCase();
+  const state = rooms.get(code);
+  if (!state) return null;
+  // A socket can't be both a player and a screen.
+  if (playerToRoom.has(socketId)) return null;
+  const prev = screenToRoom.get(socketId);
+  if (prev && prev !== code) removeScreen(socketId);
+  screenToRoom.set(socketId, code);
+  if (!state.screenIds) state.screenIds = [];
+  if (!state.screenIds.includes(socketId)) state.screenIds.push(socketId);
+  return state;
+}
+
+/** Detach a screen socket. Returns the room it was attached to (if any). */
+export function removeScreen(socketId: string): GameState | null {
+  const code = screenToRoom.get(socketId);
+  if (!code) return null;
+  screenToRoom.delete(socketId);
+  const state = rooms.get(code);
+  if (!state) return null;
+  if (state.screenIds) state.screenIds = state.screenIds.filter((id) => id !== socketId);
+  return state;
+}
+
+export function getRoomByScreen(socketId: string): GameState | undefined {
+  const code = screenToRoom.get(socketId);
+  return code ? rooms.get(code) : undefined;
 }
 
 export function selectClass(socketId: string, playerClass: PlayerClass): GameState | null {

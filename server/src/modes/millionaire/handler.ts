@@ -521,6 +521,11 @@ const handler: ModeHandler = {
     });
   },
 
+  // Screen (TV) joined mid-game: state.millionaire is mirrored by pushState.
+  onScreenJoin(_io, socket, state) {
+    socket.emit('game-state', state);
+  },
+
   stop(_io, state) {
     const data = rooms.get(state.roomCode);
     if (data) clearTimers(data);

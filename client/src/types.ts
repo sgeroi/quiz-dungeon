@@ -134,6 +134,10 @@ export interface GameState {
   spyId?: string;
   /** Выбранные контент-паки комнаты (лобби). Нет ключа = builtin-пак режима. */
   contentPacks?: Partial<Record<GameMode, string>>;
+  /** Интерактивная пати: без видео/микрофона, вход игроков по QR, есть роль «экран». */
+  interactive?: boolean;
+  /** socket.id подключённых экранов (ТВ). Экран — не игрок. */
+  screenIds?: string[];
   rewardPhase?: {
     rotation: string[];
     turnIndex: number;
@@ -186,7 +190,9 @@ export interface DungeonConfig {
 }
 
 export interface ClientEvents {
-  'create-room': (playerName: string, mode?: GameMode) => void;
+  'create-room': (playerName: string, mode?: GameMode, opts?: { interactive?: boolean }) => void;
+  'join-screen': (roomCode: string) => void;
+  'set-interactive': (on: boolean) => void;
   'join-room': (roomCode: string, playerName: string) => void;
   'rejoin-room': (roomCode: string, playerName: string) => void;
   'select-class': (playerClass: PlayerClass) => void;
@@ -215,6 +221,7 @@ export interface ClientEvents {
 export interface ServerEvents {
   'room-created': (roomCode: string) => void;
   'room-joined': (state: GameState) => void;
+  'screen-joined': (state: GameState) => void;
   'game-state': (state: GameState) => void;
   'player-joined': (player: Player) => void;
   'player-left': (playerId: string) => void;

@@ -494,6 +494,11 @@ const handler: ModeHandler = {
     });
   },
 
+  // Screen (TV) joined mid-game: state.topicSplit is the public snapshot.
+  onScreenJoin(_io, socket, state) {
+    socket.emit('game-state', state);
+  },
+
   stop(_io, state) {
     clearTimer(state.roomCode);
     ROOMS.delete(state.roomCode);

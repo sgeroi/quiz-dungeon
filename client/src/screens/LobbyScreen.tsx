@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { QRCodeSVG } from 'qrcode.react';
 import { useStore } from '../store';
 import { CLASS_LIST } from '../classData';
 import { GAME_MODES } from '../types';
@@ -8,7 +9,7 @@ import GameModeGrid from '../components/GameModeGrid';
 import QpHeader from '../components/QpHeader';
 
 export default function LobbyScreen() {
-  const { gameState, playerId, selectClass, setReady, startGame, addBot, setGameMode, setContentPack } = useStore();
+  const { gameState, playerId, selectClass, setReady, startGame, addBot, setGameMode, setContentPack, setInteractive } = useStore();
   const currentMode: GameMode = gameState?.gameMode ?? 'classic';
 
   // Content packs available for the selected mode (GET /api/content?mode=).
@@ -36,6 +37,9 @@ export default function LobbyScreen() {
   const needsClass = currentMode === 'classic';
   const canReady = needsClass ? !!me?.playerClass : true;
   const readyCount = players.filter((p) => p.isReady).length;
+  const interactive = !!gameState.interactive;
+  const joinUrl = `${window.location.origin}/#/join/${gameState.roomCode}`;
+  const screenUrl = `#/screen/${gameState.roomCode}`;
 
   return (
     <div className="h-full flex flex-col p-4 sm:p-6 overflow-y-auto">
@@ -106,8 +110,58 @@ export default function LobbyScreen() {
               + Добавить бота
             </button>
           )}
+
+          {/* Interactive: QR join */}
+          {interactive && isHost && (
+            <div className="mt-4 flex flex-col items-center gap-3 rounded-2xl bg-white/5 p-4">
+              <div className="rounded-3xl bg-white p-3 shadow-[0_0_40px_rgba(255,219,16,0.2)]">
+                <QRCodeSVG value={joinUrl} size={220} level="M" bgColor="#ffffff" fgColor="#1C0925" />
+              </div>
+              <div className="text-base font-extrabold text-center">Наведи камеру — и ты в пати</div>
+              <a
+                href={screenUrl}
+                target="_blank"
+                rel="noopener"
+                className="btn-secondary w-full py-2.5 px-4 text-sm text-center"
+              >
+                📺 Открыть экран для ТВ
+              </a>
+            </div>
+          )}
+          {interactive && !isHost && (
+            <div className="mt-4 flex items-center gap-3 rounded-2xl bg-white/5 p-3">
+              <div className="rounded-2xl bg-white p-1.5 shrink-0">
+                <QRCodeSVG value={joinUrl} size={96} level="M" bgColor="#ffffff" fgColor="#1C0925" />
+              </div>
+              <div className="text-sm font-bold leading-snug">
+                Позвать друга
+                <div className="text-xs text-[var(--color-dungeon-muted)] font-medium mt-0.5">Пусть наведёт камеру на QR — сразу попадёт в пати.</div>
+              </div>
+            </div>
+          )}
+
+          {/* Interactive toggle (host) / badge (others) */}
+          {isHost ? (
+            <label className={`mt-3 flex items-start gap-3 rounded-2xl px-3.5 py-3 cursor-pointer transition-colors border ${
+              interactive ? 'bg-[var(--color-dungeon-gold)]/10 border-[var(--color-dungeon-gold)]/50' : 'bg-white/5 border-white/10 hover:bg-white/[0.08]'
+            }`}>
+              <input
+                type="checkbox"
+                checked={interactive}
+                onChange={(e) => setInteractive(e.target.checked)}
+                className="mt-0.5 h-4 w-4 accent-[var(--color-dungeon-gold)] cursor-pointer"
+              />
+              <span className="min-w-0">
+                <span className="block text-sm font-bold text-white">Интерактив: вход по QR</span>
+                <span className="block text-xs text-[var(--color-dungeon-muted)] font-medium leading-snug">Без камеры и микрофона, вопросы можно вывести на ТВ.</span>
+              </span>
+            </label>
+          ) : interactive ? (
+            <div className="mt-3 text-center text-xs font-bold text-[var(--color-dungeon-gold)]">Интерактив · без камеры и микрофона</div>
+          ) : null}
+
           <div className="mt-3 text-xs text-[var(--color-dungeon-muted)] font-medium text-center">
-            Поделись кодом — друзья заходят с телефона, планшета или ноутбука.
+            {interactive ? 'Друзья заходят по QR или по коду с телефона.' : 'Поделись кодом — друзья заходят с телефона, планшета или ноутбука.'}
           </div>
         </div>
 

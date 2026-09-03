@@ -21,6 +21,10 @@ import {
   setContentPack,
   allPlayersReady,
   addBot,
+  setInteractive,
+  addScreen,
+  removeScreen,
+  getRoomByScreen,
 } from './utils/RoomManager.ts';
 import { startGame, submitAnswer, submitBet, cheatWinQuestion, cheatSkipFloor, submitRewardPick } from './game/GameLoop.ts';
 import { useAbility } from './game/Abilities.ts';
@@ -178,9 +182,10 @@ io.on('connection', (socket) => {
     handler?.registerSocket?.(io, socket, () => getRoomByPlayer(socket.id));
   }
 
-  socket.on('create-room', (playerName: string, mode?: GameMode) => {
+  socket.on('create-room', (playerName: string, mode?: GameMode, opts?: { interactive?: boolean }) => {
     const safeMode: GameMode = mode && VALID_MODES.includes(mode) ? mode : 'classic';
-    const state = createRoom(socket.id, playerName, safeMode);
+    const interactive = !!(opts && typeof opts === 'object' && opts.interactive);
+    const state = createRoom(socket.id, playerName, safeMode, { interactive });
     socket.join(state.roomCode);
     socket.emit('room-created', state.roomCode);
     io.to(state.roomCode).emit('game-state', state);
@@ -235,6 +240,41 @@ io.on('connection', (socket) => {
     const state = setContentPack(socket.id, mode, typeof packId === 'string' && packId ? packId : null);
     if (state) {
       io.to(state.roomCode).emit('game-state', state);
+    }
+  });
+
+  // Host-only, lobby-only: toggle interactive mode (QR join, no video/mic).
+  socket.on('set-interactive', (on: boolean) => {
+    const state = setInteractive(socket.id, !!on);
+    if (state) {
+      io.to(state.roomCode).emit('game-state', state);
+    }
+  });
+
+  // --- Screen (TV presenter) role: not a player, just listens to room broadcasts ---
+  socket.on('join-screen', (roomCode: string) => {
+    if (typeof roomCode !== 'string' || !roomCode.trim()) {
+      socket.emit('error', 'Room not found.');
+      return;
+    }
+    const state = addScreen(roomCode.trim(), socket.id);
+    if (!state) {
+      socket.emit('error', 'Room not found.');
+      return;
+    }
+    socket.join(state.roomCode);
+    socket.emit('screen-joined', state);
+    io.to(state.roomCode).emit('game-state', state);
+    // Mid-game: let the mode push its current snapshot to this screen only.
+    if (state.phase !== 'lobby') {
+      const handler = MODE_HANDLERS[state.gameMode ?? 'classic'];
+      if (handler?.onScreenJoin) {
+        try {
+          handler.onScreenJoin(io, socket, state);
+        } catch (err) {
+          console.error('[screen] onScreenJoin failed:', err);
+        }
+      }
     }
   });
 
@@ -335,6 +375,16 @@ io.on('connection', (socket) => {
   });
 
   socket.on('leave-room', () => {
+    // Screens are not players — just detach.
+    if (getRoomByScreen(socket.id)) {
+      const room = removeScreen(socket.id);
+      socket.emit('left-room');
+      if (room) {
+        socket.leave(room.roomCode);
+        io.to(room.roomCode).emit('game-state', room);
+      }
+      return;
+    }
     const { room, deleted, wasHost } = leaveRoom(socket.id);
     socket.emit('left-room');
     if (room) {
@@ -352,10 +402,18 @@ io.on('connection', (socket) => {
 
   socket.on('disconnect', () => {
     console.log(`Player disconnected: ${socket.id}`);
-    const { room } = removePlayer(socket.id);
+    const screenRoom = removeScreen(socket.id);
+    if (screenRoom) {
+      io.to(screenRoom.roomCode).emit('game-state', screenRoom);
+      return;
+    }
+    const { room, deleted, roomCode } = removePlayer(socket.id);
     if (room) {
       io.to(room.roomCode).emit('player-left', socket.id);
       io.to(room.roomCode).emit('game-state', room);
+    } else if (deleted && roomCode) {
+      // Last player gone — tell any attached screens the room is closed.
+      io.to(roomCode).emit('room-closed');
     }
   });
 });

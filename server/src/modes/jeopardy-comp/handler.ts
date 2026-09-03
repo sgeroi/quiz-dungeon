@@ -466,6 +466,16 @@ const handler: ModeHandler = {
     });
   },
 
+  // Screen (TV) joined mid-game: send the public grid view (no correct answers).
+  onScreenJoin(_io, socket, state) {
+    const j = getJ(state);
+    if (!j) {
+      socket.emit('game-state', state);
+      return;
+    }
+    socket.emit('game-state', { ...state, jeopardy: publicJ(j) } as GameState);
+  },
+
   stop(_io, state) {
     clearAllTimers(state.roomCode);
     roomTimers.delete(state.roomCode);

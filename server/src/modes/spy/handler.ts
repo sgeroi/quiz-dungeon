@@ -520,6 +520,34 @@ const handler: ModeHandler = {
     });
   },
 
+  // Screen (TV) joined mid-game: replay the room-broadcast snapshot events for
+  // the current sub-phase. The spy's identity and the answer leak stay personal.
+  onScreenJoin(_io, socket, state) {
+    const s = getSpyState(state);
+    socket.emit('game-state', state);
+    if (!s) return;
+    socket.emit('mode-spy-state' as any, publicSpyState(s));
+    if (s.phase === 'question' && s.currentQuestion) {
+      socket.emit('mode-spy-question' as any, {
+        round: s.round + 1,
+        totalRounds: s.totalRounds,
+        question: publicQuestion(s.currentQuestion),
+        timeLimit: QUESTION_TIME,
+      });
+    } else if (s.phase === 'voting') {
+      const eligible = Object.values(state.players)
+        .filter(p => !s.eliminated[p.id])
+        .map(p => ({ id: p.id, name: p.name }));
+      socket.emit('mode-spy-voting' as any, {
+        timeLimit: VOTE_TIME,
+        players: eligible,
+        round: s.round,
+        totalRounds: s.totalRounds,
+        eliminated: { ...s.eliminated },
+      });
+    }
+  },
+
   stop(_io, state) {
     clearTimer(state.roomCode);
     SPY_STATES.delete(state.roomCode);
