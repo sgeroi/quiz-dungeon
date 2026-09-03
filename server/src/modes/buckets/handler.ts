@@ -57,6 +57,11 @@ interface RoomTimers {
 
 const timers = new Map<string, RoomTimers>();
 
+// Correct bucket per item for the current round, kept OUT of the broadcast
+// state while players are sorting (state.buckets goes to every phone and TV
+// screen). Copied into bs.answers only when the round is scored.
+const answerKeys = new Map<string, number[]>();
+
 function clearAllTimers(roomCode: string): void {
   const t = timers.get(roomCode);
   if (!t) return;
@@ -131,7 +136,8 @@ function startRound(io: Server, state: GameState): void {
 
   bs.setIndex = setIndex;
   bs.publicSet = buildPublicSet(original, publicItems);
-  bs.answers = answers;
+  answerKeys.set(state.roomCode, answers);
+  bs.answers = undefined; // revealed in endRound
   bs.submissions = {};
   bs.submitted = {};
   for (const p of Object.values(state.players)) {
@@ -189,7 +195,8 @@ function endRound(io: Server, state: GameState): void {
   setTimers(state.roomCode, { round: undefined, ticker: undefined });
 
   // Score
-  const answers = bs.answers ?? [];
+  const answers = answerKeys.get(state.roomCode) ?? [];
+  bs.answers = answers; // reveal for the results screens
   const playerCorrect: Record<string, number> = {};
   let teamCorrect = 0;
   const aliveIds = getAlive(state).map(p => p.id);
@@ -287,7 +294,7 @@ function scheduleBotAnswers(io: Server, state: GameState): void {
   if (!bs) return;
   const bots = Object.values(state.players).filter(p => p.isBot && p.isAlive);
   if (bots.length === 0) return;
-  const answers = bs.answers ?? [];
+  const answers = answerKeys.get(state.roomCode) ?? [];
 
   for (const bot of bots) {
     // Bot accuracy ~70%; place all items quickly (1-5 seconds total)
@@ -364,8 +371,9 @@ const handler: ModeHandler = {
       submitted: {},
       roundStartedAt: 0,
       roundEndsAt: 0,
-      answers: [],
+      answers: undefined,
     };
+    answerKeys.delete(state.roomCode);
     setBucketsState(state, bs);
 
     state.totalFloors = TOTAL_ROUNDS;
@@ -441,6 +449,7 @@ const handler: ModeHandler = {
   stop(_io, state) {
     clearAllTimers(state.roomCode);
     setsByRoom.delete(state.roomCode);
+    answerKeys.delete(state.roomCode);
     delete (state as any).buckets;
   },
 };

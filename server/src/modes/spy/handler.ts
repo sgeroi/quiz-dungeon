@@ -10,6 +10,9 @@ const QUESTION_TIME = 20;
 const RESULT_TIME = 5;
 // Per-round voting window (issue 3.1). Final decision vote also reuses this.
 const VOTE_TIME = 15;
+// Game-over reveal window: the spy's identity is shown (TV + phones) before
+// the room flips to the generic victory/defeat screens.
+const REVEAL_TIME = 8;
 
 interface SpyState {
   spyId: string | undefined;
@@ -27,6 +30,8 @@ interface SpyState {
   // issue 3.1: players eliminated by post-round voting are skipped on subsequent
   // rounds and cannot vote.
   eliminated: Record<string, boolean>;
+  // Last 'mode-spy-game-over' payload, replayed to screens joining during the reveal window.
+  lastGameOver?: Record<string, unknown>;
 }
 
 // Map roomCode -> SpyState
@@ -376,6 +381,8 @@ function finishVoting(io: Server, state: GameState) {
       eliminatedName: state.players[topId]?.name ?? topId,
       wasSpy: false,
       tally,
+      // Vote is closed: who voted for whom is public now (TV presenter shows it).
+      votes: { ...s.votes },
       round: s.round,
     });
   } else {
@@ -384,6 +391,7 @@ function finishVoting(io: Server, state: GameState) {
       eliminatedName: null,
       wasSpy: false,
       tally,
+      votes: { ...s.votes },
       round: s.round,
     });
   }
@@ -426,8 +434,7 @@ function finishGame(
 
   const spyName = s.spyId ? state.players[s.spyId]?.name : 'неизвестно';
 
-  state.phase = teamWon ? 'victory' : 'defeat';
-  io.to(state.roomCode).emit('mode-spy-game-over' as any, {
+  const gameOver = {
     teamWon,
     reason,
     spyId: s.spyId,
@@ -438,19 +445,46 @@ function finishGame(
     tally: extra?.tally ?? {},
     history: s.history,
     eliminated: { ...s.eliminated },
-  });
-  io.to(state.roomCode).emit('game-over', teamWon, {
-    mode: 'spy',
-    teamWon,
-    reason,
-    spyId: s.spyId,
-    spyName,
-    teamScore: s.teamScore,
-    spyScore: s.spyScore,
-    votes: s.votes,
-    tally: extra?.tally ?? {},
-  });
+  };
+  s.lastGameOver = gameOver;
+
+  // Reveal window: stay in 'results' for a few seconds so the mode screens
+  // (phones + TV presenter) can show who the spy was, then flip to the
+  // generic victory/defeat phase and fire 'game-over'.
+  state.phase = 'results';
+  state.timer = REVEAL_TIME;
+  state.maxTimer = REVEAL_TIME;
+  io.to(state.roomCode).emit('mode-spy-game-over' as any, gameOver);
   broadcastState(io, state);
+
+  const flip = () => {
+    const cur = getSpyState(state);
+    if (cur !== s) return; // room stopped / restarted meanwhile
+    state.phase = teamWon ? 'victory' : 'defeat';
+    state.timer = 0;
+    io.to(state.roomCode).emit('game-over', teamWon, {
+      mode: 'spy',
+      teamWon,
+      reason,
+      spyId: s.spyId,
+      spyName,
+      teamScore: s.teamScore,
+      spyScore: s.spyScore,
+      votes: s.votes,
+      tally: extra?.tally ?? {},
+    });
+    broadcastState(io, state);
+  };
+
+  startTimer(
+    state.roomCode,
+    REVEAL_TIME,
+    (sec) => {
+      state.timer = sec;
+      io.to(state.roomCode).emit('timer-tick', sec);
+    },
+    flip,
+  );
 }
 
 const handler: ModeHandler = {
@@ -545,6 +579,8 @@ const handler: ModeHandler = {
         totalRounds: s.totalRounds,
         eliminated: { ...s.eliminated },
       });
+    } else if (s.phase === 'finished' && s.lastGameOver) {
+      socket.emit('mode-spy-game-over' as any, s.lastGameOver);
     }
   },
 
