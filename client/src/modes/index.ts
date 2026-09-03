@@ -13,8 +13,10 @@ import JeopardyCoopScreen from './jeopardy-coop/JeopardyCoopScreen';
 import SpeedScreen from './speed/SpeedScreen';
 import PetersburgScreen from './petersburg/PetersburgScreen';
 import TopicSplitScreen from './topic-split/TopicSplitScreen';
+import LastManScreen from './lastman/LastManScreen';
 
 export const MODE_SCREENS: Partial<Record<GameMode, ComponentType>> = {
+  lastman:       LastManScreen,
   millionaire:   MillionaireScreen,
   buckets:       BucketsScreen,
   spy:           SpyScreen,

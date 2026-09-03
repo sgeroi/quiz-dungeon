@@ -86,6 +86,7 @@ export const CONTENT_KIND_BY_MODE: Record<GameMode, ContentData['kind']> = {
   'jeopardy-comp': 'jeopardy',
   'jeopardy-coop': 'jeopardy',
   'speed': 'simple',
+  'lastman': 'simple',
   'petersburg': 'petersburg',
   'buckets': 'buckets',
   'rpg-rewards': 'simple',

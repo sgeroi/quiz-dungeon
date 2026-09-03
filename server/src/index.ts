@@ -37,7 +37,7 @@ import { MODE_HANDLERS } from './modes/index.ts';
 
 const VALID_MODES: GameMode[] = [
   'classic', 'millionaire', 'jeopardy', 'topic-split', 'jeopardy-comp', 'jeopardy-coop',
-  'speed', 'petersburg', 'buckets', 'rpg-rewards', 'spy',
+  'speed', 'lastman', 'petersburg', 'buckets', 'rpg-rewards', 'spy',
 ];
 const VALID_TEAM_MODES: TeamMode[] = ['ffa', 'teams', 'coop'];
 

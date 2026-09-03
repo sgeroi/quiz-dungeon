@@ -19,6 +19,7 @@ export const SIMPLE_FIELDS_BY_MODE: Partial<Record<GameMode, SimpleFieldsConfig>
   'classic':     { category: 'free',   difficulty: true,  topicsEditor: false },
   'millionaire': { category: 'none',   difficulty: true,  topicsEditor: false },
   'speed':       { category: 'free',   difficulty: false, topicsEditor: false },
+  'lastman':     { category: 'free',   difficulty: false, topicsEditor: false },
   'topic-split': { category: 'topics', difficulty: false, topicsEditor: true },
   'spy':         { category: 'none',   difficulty: false, topicsEditor: false },
   'rpg-rewards': { category: 'none',   difficulty: false, topicsEditor: false },

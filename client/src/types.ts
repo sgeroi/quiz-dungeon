@@ -13,6 +13,7 @@ export type GameMode =
   | 'jeopardy-comp'
   | 'jeopardy-coop'
   | 'speed'
+  | 'lastman'
   | 'petersburg'
   | 'buckets'
   | 'rpg-rewards'
@@ -33,6 +34,7 @@ export const GAME_MODES: GameModeInfo[] = [
   { id: 'buckets',     name: 'Сортировка',                   emoji: '🪣', description: 'Раскидывай предметы по корзинам быстрее всех.' },
   { id: 'spy',         name: 'Квиз-мафия',                   emoji: '🕵️', description: 'Один из вас — шпион и играет против всех. Вычислите его.' },
   { id: 'petersburg',  name: 'Угадай фильм',                 emoji: '🎬', description: 'Каждый видит своего актёра. Соберите название фильма вместе.' },
+  { id: 'lastman',     name: 'Последний герой',              emoji: '🏆', description: 'Ошибся — потерял сердце. Таймер всё короче. Кто останется последним?' },
 ];
 
 // ==================== TEAM MODES ====================
@@ -71,6 +73,7 @@ export const TEAM_MODES_BY_GAME: Record<GameMode, TeamMode[]> = {
   // Скрытые режимы
   'topic-split':   ['coop'],
   'speed':         ['ffa', 'coop'],
+  'lastman':       ['ffa', 'teams', 'coop'],
   'rpg-rewards':   ['coop'],
   'jeopardy-comp': ['ffa', 'teams'],
   'jeopardy-coop': ['coop'],

@@ -10,8 +10,10 @@ import jeopardyCoop from './jeopardy-coop/handler.ts';
 import speed from './speed/handler.ts';
 import petersburg from './petersburg/handler.ts';
 import topicSplit from './topic-split/handler.ts';
+import lastman from './lastman/handler.ts';
 
 export const MODE_HANDLERS: Partial<Record<GameMode, ModeHandler>> = {
+  lastman,
   millionaire,
   buckets,
   spy,

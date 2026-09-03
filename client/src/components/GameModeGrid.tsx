@@ -10,6 +10,7 @@ const COVERS: Record<GameMode, string> = {
   'jeopardy-comp': 'linear-gradient(135deg,#FF3CAE 0%,#853CB5 100%)',
   'jeopardy-coop': 'linear-gradient(135deg,#8DFF85 0%,#05DF72 100%)',
   'speed':         'linear-gradient(135deg,#FFDB10 0%,#FF8A00 100%)',
+  'lastman':       'linear-gradient(135deg,#FF3CAE 0%,#FF6F6F 55%,#FFB56B 100%)',
   'petersburg':    'linear-gradient(135deg,#F5D4FF 0%,#CD8EFF 100%)',
   'buckets':       'linear-gradient(135deg,#58D8EF 0%,#2F6BFF 100%)',
   'rpg-rewards':   'linear-gradient(135deg,#FF6467 0%,#E417FC 100%)',

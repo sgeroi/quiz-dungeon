@@ -17,8 +17,10 @@ import PetersburgPresenter from './petersburg/PetersburgPresenter';
 import BucketsPresenter from './buckets/BucketsPresenter';
 import RpgRewardsPresenter from './rpg-rewards/RpgRewardsPresenter';
 import SpyPresenter from './spy/SpyPresenter';
+import LastManPresenter from './lastman/LastManPresenter';
 
 export const PRESENTER_SCREENS: Partial<Record<GameMode, ComponentType>> = {
+  'lastman': LastManPresenter,
   'classic': ClassicPresenter,
   'millionaire': MillionairePresenter,
   'topic-split': TopicSplitPresenter,

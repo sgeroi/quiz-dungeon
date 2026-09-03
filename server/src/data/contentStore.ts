@@ -98,6 +98,17 @@ export function buildBuiltinData(mode: GameMode): ContentData {
       };
       return data;
     }
+    case 'lastman': {
+      // Смесь: классические + скоростные вопросы, без дублей по тексту.
+      const seen = new Set<string>();
+      const questions: SimpleQuestionsData['questions'] = [];
+      for (const q of [...QUESTIONS, ...SPEED_QUESTIONS]) {
+        if (seen.has(q.text)) continue;
+        seen.add(q.text);
+        questions.push({ id: q.id, text: q.text, options: opts4(q.options), correctIndex: ci(q.correctIndex), category: q.category });
+      }
+      return { kind: 'simple', questions };
+    }
     case 'speed': {
       const data: SimpleQuestionsData = {
         kind: 'simple',
