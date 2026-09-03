@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useStore } from '../../store';
 import { socket } from '../../socket';
+import type { Player, Team, TeamMode } from '../../types';
+import TeamBadge from '../../components/TeamBadge';
 
 // ---------- Pyramid ----------
 const PRIZE_PYRAMID: number[] = [
@@ -22,9 +24,26 @@ interface FriendData {
   suggestionIndex: 0 | 1 | 2 | 3;
   text: string;
 }
+interface HintsUsed { fifty: boolean; audience: boolean; friend: boolean; swap: boolean }
+type ContestantStatus = 'playing' | 'out' | 'won';
+interface ContestantView {
+  id: string;
+  status: ContestantStatus;
+  hintsUsed: HintsUsed;
+  fiftyEliminated: number[];
+  audience: AudienceData | null;
+  friend: FriendData | null;
+  answeredIds: string[];
+  votes: Record<string, number>;
+  answerIndex: number | null;
+  lastWasCorrect: boolean | null;
+  sum: number;
+  finalLevel: number;
+}
 interface MillionaireSnapshot {
+  teamMode?: TeamMode;
   level: number;
-  hintsUsed: { fifty: boolean; audience: boolean; friend: boolean; swap: boolean };
+  hintsUsed: HintsUsed;
   fiftyEliminated: number[];
   audience: AudienceData | null;
   friend: FriendData | null;
@@ -39,6 +58,10 @@ interface MillionaireSnapshot {
   finalSum: number;
   finalLevel: number;
   pyramid: number[];
+  contestants?: Record<string, ContestantView>;
+  scores?: Record<string, number>;
+  teamScores?: Record<string, number>;
+  playingCount?: number;
 }
 
 const formatRub = (n: number) =>
@@ -52,13 +75,41 @@ const LETTER_COLORS = [
   'from-sky-500/30 to-sky-600/20 border-sky-400/40',
 ];
 
+/** Contestant view from the snapshot; for old snapshots (no contestants) — synthesized from top-level fields. */
+function myContestant(m: MillionaireSnapshot, mode: TeamMode, myId: string, myTeamId: string | undefined): ContestantView | null {
+  const key = mode === 'ffa' ? myId : mode === 'teams' ? (myTeamId ?? '') : 'all';
+  const c = m.contestants?.[key];
+  if (c) return c;
+  if (mode !== 'coop') return null;
+  return {
+    id: 'all',
+    status: 'playing',
+    hintsUsed: m.hintsUsed,
+    fiftyEliminated: m.fiftyEliminated,
+    audience: m.audience,
+    friend: m.friend,
+    answeredIds: [],
+    votes: {},
+    answerIndex: m.lastAnswerIndex,
+    lastWasCorrect: m.lastWasCorrect,
+    sum: m.finalSum,
+    finalLevel: m.finalLevel,
+  };
+}
+
 export default function MillionaireScreen() {
   const gameState = useStore((s) => s.gameState);
+  const playerId = useStore((s) => s.playerId);
   const phase = gameState?.phase;
   const m = (gameState as any)?.millionaire as MillionaireSnapshot | undefined;
 
   const [pickedIndex, setPickedIndex] = useState<number | null>(null);
   const [showFriend, setShowFriend] = useState(false);
+
+  const myId = playerId ?? '';
+  const me: Player | undefined = gameState?.players[myId];
+  const mode: TeamMode = m?.teamMode ?? gameState?.teamMode ?? 'coop';
+  const mine = m ? myContestant(m, mode, myId, me?.teamId) : null;
 
   // Reset local UI on new question
   useEffect(() => {
@@ -70,8 +121,8 @@ export default function MillionaireScreen() {
 
   // Auto-show friend dialog when friend hint is used
   useEffect(() => {
-    if (m?.friend) setShowFriend(true);
-  }, [m?.friend?.text]);
+    if (mine?.friend) setShowFriend(true);
+  }, [mine?.friend?.text]);
 
   if (!gameState) {
     return (
@@ -86,8 +137,8 @@ export default function MillionaireScreen() {
     return (
       <MillionaireFinish
         victory={phase === 'victory'}
-        sum={m?.finalSum ?? 0}
-        level={m?.finalLevel ?? 0}
+        sum={mine?.sum ?? m?.finalSum ?? 0}
+        level={mine?.finalLevel ?? m?.finalLevel ?? 0}
       />
     );
   }
@@ -101,26 +152,43 @@ export default function MillionaireScreen() {
   }
 
   const level = m.level;
+  const pyramid = m.pyramid?.length ? m.pyramid : PRIZE_PYRAMID;
   const showResult = phase === 'results';
   const correctIdx = m.revealCorrectIndex;
-  const lastIdx = m.lastAnswerIndex;
   const timer = gameState.timer;
   const maxTimer = gameState.maxTimer || 30;
   const timerPct = Math.max(0, Math.min(100, (timer / maxTimer) * 100));
   const timerLow = timer <= 5;
 
+  const myTeam: Team | undefined = mode === 'teams' ? gameState.teams?.find((t) => t.id === me?.teamId) : undefined;
+  const isOut = !!mine && mine.status !== 'playing';
+  const spectator = !mine || isOut;
+  const hints: HintsUsed = mine?.hintsUsed ?? m.hintsUsed;
+  const eliminated = mine?.fiftyEliminated ?? [];
+  const audience = mine?.audience ?? null;
+  const friend = mine?.friend ?? null;
+  const myVote = mine?.votes?.[myId];
+  const lastIdx = showResult ? (mine?.answerIndex ?? null) : null;
+  const alreadyVoted = pickedIndex !== null || myVote !== undefined;
+  // In teams the round is "locked" for me once I voted; the contestant answer comes later.
+  const locked = spectator || showResult || alreadyVoted;
+
   const onPick = (i: number) => {
-    if (showResult) return;
-    if (m.fiftyEliminated.includes(i)) return;
-    if (pickedIndex !== null) return;
+    if (locked) return;
+    if (eliminated.includes(i)) return;
     setPickedIndex(i);
     socket.emit('mode-millionaire-answer' as any, i);
   };
 
   const useHint = (hint: 'fifty' | 'audience' | 'friend' | 'swap') => {
-    if (showResult) return;
+    if (locked) return;
     socket.emit('mode-millionaire-hint' as any, hint);
   };
+
+  // Teammates' votes (teams) — shown during answering so the team can coordinate.
+  const teammates: Player[] = mode === 'teams' && myTeam
+    ? Object.values(gameState.players).filter((p) => p.teamId === myTeam.id)
+    : [];
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-[#06122c] via-[#091a3a] to-[#0c1e4a] relative overflow-hidden">
@@ -136,13 +204,44 @@ export default function MillionaireScreen() {
           <h1 className="text-2xl md:text-3xl font-black bg-gradient-to-r from-amber-300 via-yellow-200 to-amber-300 bg-clip-text text-transparent drop-shadow-[0_0_12px_rgba(245,197,24,0.3)]">
             КТО ХОЧЕТ СТАТЬ МИЛЛИОНЕРОМ
           </h1>
-          <div className="text-xs text-amber-200/60 mt-1 tracking-widest">
-            ВОПРОС {level} ИЗ {PRIZE_PYRAMID.length}
+          <div className="text-xs text-amber-200/60 mt-1 tracking-widest flex items-center justify-center gap-2">
+            <span>ВОПРОС {level} ИЗ {pyramid.length}</span>
+            {mode === 'ffa' && <span className="text-amber-200/40">· ЛИЧНЫЙ ЗАЧЁТ</span>}
+            {myTeam && <TeamBadge team={myTeam} size="sm" />}
           </div>
         </div>
 
-        {/* Pyramid */}
-        <Pyramid currentLevel={level} pyramid={m.pyramid?.length ? m.pyramid : PRIZE_PYRAMID} />
+        {/* Out-of-game banner */}
+        {isOut && mine && (
+          <div className={`rounded-2xl px-4 py-3 text-center border ${mine.status === 'won' ? 'border-amber-300/50 bg-amber-300/10' : 'border-red-400/30 bg-red-500/10'}`}>
+            <div className={`text-lg font-black ${mine.status === 'won' ? 'text-amber-200' : 'text-red-300'}`}>
+              {mine.status === 'won' ? '🏆 Миллион взят!' : mode === 'teams' ? '✗ Команда выбыла' : '✗ Вы выбыли'}
+            </div>
+            <div className="text-sm text-white/70">
+              {mode === 'teams' ? 'Ваш выигрыш' : 'Ваш выигрыш'}: <span className="font-mono font-bold text-amber-200">{formatRub(mine.sum)}</span> · дальше наблюдаете
+            </div>
+          </div>
+        )}
+
+        {/* Pyramid — own / team (contestant's own level: current room level while playing, final level when out) */}
+        <Pyramid
+          currentLevel={mine && mine.status !== 'playing' ? mine.finalLevel + 1 : level}
+          stopped={isOut}
+          pyramid={pyramid}
+        />
+
+        {/* Others (ffa / teams) */}
+        {mode !== 'coop' && m.contestants && (
+          <OthersStrip
+            mode={mode}
+            contestants={m.contestants}
+            players={gameState.players}
+            teams={gameState.teams ?? []}
+            myKey={mine?.id ?? ''}
+            showResult={showResult}
+            correctIdx={correctIdx}
+          />
+        )}
 
         {/* Question */}
         <div className="glass-panel-gold rounded-2xl px-5 py-5 text-center border border-amber-300/20 shadow-[0_0_30px_rgba(245,197,24,0.08)]">
@@ -152,27 +251,27 @@ export default function MillionaireScreen() {
         </div>
 
         {/* Audience hint result */}
-        {m.audience && (
+        {audience && (
           <div className="glass-panel rounded-2xl p-3 border border-blue-400/30">
             <div className="text-xs text-blue-200/80 text-center mb-2 font-bold tracking-wider uppercase">
               📊 Результаты голосования зала
             </div>
             <div className="flex items-end justify-around gap-3 h-24">
-              {m.audience.percents.map((pct, i) => {
-                const eliminated = m.fiftyEliminated.includes(i);
+              {audience.percents.map((pct, i) => {
+                const gone = eliminated.includes(i);
                 return (
                   <div key={i} className="flex flex-col items-center gap-1 flex-1">
                     <div className="text-xs font-mono text-amber-200">
-                      {eliminated ? '—' : `${pct}%`}
+                      {gone ? '—' : `${pct}%`}
                     </div>
                     <div className="w-full bg-black/30 rounded-t h-full flex items-end overflow-hidden">
                       <div
                         className={`w-full rounded-t transition-all duration-700 ${
-                          eliminated
+                          gone
                             ? 'bg-gray-500/30'
                             : 'bg-gradient-to-t from-amber-400 to-amber-300'
                         }`}
-                        style={{ height: eliminated ? '4%' : `${Math.max(4, pct)}%` }}
+                        style={{ height: gone ? '4%' : `${Math.max(4, pct)}%` }}
                       />
                     </div>
                     <div className="text-[10px] text-gray-400">{LETTERS[i]}</div>
@@ -184,14 +283,14 @@ export default function MillionaireScreen() {
         )}
 
         {/* Friend hint dialog */}
-        {showFriend && m.friend && (
+        {showFriend && friend && (
           <div className="glass-panel rounded-2xl p-3 border border-emerald-400/30 flex items-start gap-3">
             <div className="text-3xl">📞</div>
             <div className="flex-1">
               <div className="text-xs font-bold text-emerald-300 uppercase tracking-wider mb-1">
                 Звонок другу
               </div>
-              <div className="text-sm text-white">{m.friend.text}</div>
+              <div className="text-sm text-white">{friend.text}</div>
             </div>
             <button
               onClick={() => setShowFriend(false)}
@@ -205,15 +304,17 @@ export default function MillionaireScreen() {
         {/* Answer options */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           {(m.question?.options ?? ['', '', '', '']).map((opt, i) => {
-            const eliminated = m.fiftyEliminated.includes(i);
-            const isPicked = lastIdx === i || pickedIndex === i;
+            const gone = eliminated.includes(i);
+            const isMyPick = pickedIndex === i || myVote === i;
+            const isPicked = lastIdx === i || isMyPick;
             const isCorrect = showResult && correctIdx === i;
-            const isWrong = showResult && isPicked && correctIdx !== i;
-            const friendHighlight =
-              !showResult && m.friend?.suggestionIndex === i;
+            const isWrong = showResult && lastIdx === i && correctIdx !== i;
+            const friendHighlight = !showResult && friend?.suggestionIndex === i;
+            const votersHere = teammates.filter((p) => mine?.votes?.[p.id] === i);
 
             let stateClasses = `bg-gradient-to-br ${LETTER_COLORS[i]} hover:brightness-125`;
-            if (eliminated) stateClasses = 'bg-black/30 border-white/5 opacity-30';
+            if (spectator && !showResult) stateClasses = `bg-gradient-to-br ${LETTER_COLORS[i]} opacity-60`;
+            if (gone) stateClasses = 'bg-black/30 border-white/5 opacity-30';
             if (isCorrect) stateClasses = 'bg-gradient-to-br from-green-400 to-emerald-600 border-green-300 animate-pulse';
             if (isWrong) stateClasses = 'bg-gradient-to-br from-red-500 to-red-700 border-red-300 animate-[shake_0.4s]';
             if (!showResult && isPicked) stateClasses = 'bg-gradient-to-br from-amber-300 to-amber-500 border-amber-200 animate-pulse';
@@ -221,7 +322,7 @@ export default function MillionaireScreen() {
             return (
               <button
                 key={i}
-                disabled={eliminated || showResult || pickedIndex !== null}
+                disabled={gone || locked}
                 onClick={() => onPick(i)}
                 className={`relative text-left rounded-2xl border-2 px-4 py-3 transition-all ${stateClasses} ${
                   friendHighlight ? 'ring-2 ring-emerald-300/60' : ''
@@ -232,14 +333,32 @@ export default function MillionaireScreen() {
                     {LETTERS[i]}
                   </div>
                   <div className="flex-1 text-white font-medium text-sm md:text-base">
-                    {eliminated ? '—' : opt}
+                    {gone ? '—' : opt}
                   </div>
                   {friendHighlight && <div className="text-xs">📞</div>}
+                  {votersHere.length > 0 && (
+                    <div className="flex flex-wrap gap-1 justify-end max-w-[45%]">
+                      {votersHere.map((p) => (
+                        <span key={p.id} className="text-[10px] px-1.5 py-0.5 rounded-full bg-black/40 border border-white/15 text-white/80">
+                          {p.id === myId ? 'вы' : p.name}
+                        </span>
+                      ))}
+                    </div>
+                  )}
                 </div>
               </button>
             );
           })}
         </div>
+
+        {/* Team vote status */}
+        {mode === 'teams' && !showResult && !spectator && mine && (
+          <div className="text-center text-xs text-white/60">
+            {alreadyVoted
+              ? `Голос принят · проголосовали ${mine.answeredIds.length} из ${teammates.length} — ответ команды по большинству`
+              : `Голосуйте: проголосовали ${mine.answeredIds.length} из ${teammates.length}`}
+          </div>
+        )}
 
         {/* Timer + Hints bar */}
         <div className="glass-panel rounded-2xl p-3 mt-auto flex flex-col gap-3 border border-amber-300/10">
@@ -266,51 +385,60 @@ export default function MillionaireScreen() {
             </div>
           )}
 
-          {/* Hints */}
-          <div className="grid grid-cols-4 gap-2">
-            <HintButton
-              icon="50/50"
-              label="50/50"
-              used={m.hintsUsed.fifty}
-              disabled={showResult}
-              onClick={() => useHint('fifty')}
-            />
-            <HintButton
-              icon="🏛️"
-              label="Зал"
-              used={m.hintsUsed.audience}
-              disabled={showResult}
-              onClick={() => useHint('audience')}
-            />
-            <HintButton
-              icon="📞"
-              label="Друг"
-              used={m.hintsUsed.friend}
-              disabled={showResult}
-              onClick={() => useHint('friend')}
-            />
-            <HintButton
-              icon="🔄"
-              label="Замена"
-              used={!!m.hintsUsed.swap}
-              disabled={showResult}
-              onClick={() => useHint('swap')}
-            />
-          </div>
+          {/* Hints (swap only in coop — everyone shares one question in ffa/teams) */}
+          {!spectator && (
+            <div className={`grid gap-2 ${mode === 'coop' ? 'grid-cols-4' : 'grid-cols-3'}`}>
+              <HintButton
+                icon="50/50"
+                label="50/50"
+                used={hints.fifty}
+                disabled={locked}
+                onClick={() => useHint('fifty')}
+              />
+              <HintButton
+                icon="🏛️"
+                label="Зал"
+                used={hints.audience}
+                disabled={locked}
+                onClick={() => useHint('audience')}
+              />
+              <HintButton
+                icon="📞"
+                label="Друг"
+                used={hints.friend}
+                disabled={locked}
+                onClick={() => useHint('friend')}
+              />
+              {mode === 'coop' && (
+                <HintButton
+                  icon="🔄"
+                  label="Замена"
+                  used={!!hints.swap}
+                  disabled={locked}
+                  onClick={() => useHint('swap')}
+                />
+              )}
+            </div>
+          )}
         </div>
 
         {/* Result banner */}
-        {showResult && (
+        {showResult && mine && !(isOut && mine.lastWasCorrect === null) && (
           <div className="text-center py-2 animate-[fadeIn_0.4s_ease-out]">
-            {m.lastWasCorrect ? (
+            {mine.lastWasCorrect ? (
               <div className="text-2xl font-black text-green-400 drop-shadow-[0_0_10px_rgba(74,222,128,0.5)]">
-                ✓ ПРАВИЛЬНО! +{formatRub(PRIZE_PYRAMID[level - 1])}
+                ✓ ПРАВИЛЬНО! +{formatRub(pyramid[level - 1])}
               </div>
-            ) : (
+            ) : mine.lastWasCorrect === false ? (
               <div className="text-2xl font-black text-red-400 drop-shadow-[0_0_10px_rgba(239,68,68,0.5)]">
-                ✗ НЕВЕРНО — игра окончена
+                {mine.answerIndex === null ? '⏱ ВРЕМЯ ВЫШЛО' : '✗ НЕВЕРНО'}{mode === 'coop' ? ' — игра окончена' : ' — вы выбыли'}
               </div>
-            )}
+            ) : null}
+          </div>
+        )}
+        {showResult && spectator && mine?.lastWasCorrect === null && (
+          <div className="text-center text-sm text-white/60">
+            Правильный ответ: <span className="font-black text-green-400">{correctIdx !== null ? LETTERS[correctIdx] : '?'}</span>
           </div>
         )}
       </div>
@@ -320,17 +448,17 @@ export default function MillionaireScreen() {
 
 // ---------- Sub-components ----------
 
-function Pyramid({ currentLevel, pyramid }: { currentLevel: number; pyramid: number[] }) {
+function Pyramid({ currentLevel, pyramid, stopped }: { currentLevel: number; pyramid: number[]; stopped?: boolean }) {
   // Show levels in descending order (highest at top)
   const levels = useMemo(() => {
     return [...pyramid].map((amt, idx) => ({ level: idx + 1, amount: amt })).reverse();
   }, [pyramid]);
 
   return (
-    <div className="glass-panel rounded-2xl p-2 border border-amber-300/15">
+    <div className={`glass-panel rounded-2xl p-2 border border-amber-300/15 ${stopped ? 'opacity-60' : ''}`}>
       <div className="flex flex-col gap-0.5">
         {levels.map(({ level, amount }) => {
-          const isCurrent = level === currentLevel;
+          const isCurrent = level === currentLevel && !stopped;
           const isCleared = level < currentLevel;
           const isSafe = level === SAFE_LEVEL;
           let cls = 'text-gray-500';
@@ -351,6 +479,67 @@ function Pyramid({ currentLevel, pyramid }: { currentLevel: number; pyramid: num
                 {isSafe ? '🛡️' : isCleared ? '✓' : isCurrent ? '◆' : ''}
               </span>
             </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/** Compact status of the other contestants (ffa: players, teams: teams). */
+function OthersStrip({
+  mode,
+  contestants,
+  players,
+  teams,
+  myKey,
+  showResult,
+  correctIdx,
+}: {
+  mode: TeamMode;
+  contestants: Record<string, ContestantView>;
+  players: Record<string, Player>;
+  teams: Team[];
+  myKey: string;
+  showResult: boolean;
+  correctIdx: number | null;
+}) {
+  const rows = Object.values(contestants)
+    .filter((c) => c.id !== myKey)
+    .map((c) => {
+      const team = mode === 'teams' ? teams.find((t) => t.id === c.id) : undefined;
+      const player = mode === 'ffa' ? players[c.id] : undefined;
+      const name = team?.name ?? player?.name ?? c.id;
+      return { c, team, player, name };
+    })
+    .sort((a, b) => b.c.sum - a.c.sum);
+  if (rows.length === 0) return null;
+  return (
+    <div className="glass-panel rounded-2xl px-3 py-2 border border-white/10">
+      <div className="text-[10px] uppercase tracking-widest text-white/50 mb-1">
+        {mode === 'teams' ? 'Другие команды' : 'Соперники'}
+      </div>
+      <div className="flex flex-wrap gap-1.5">
+        {rows.map(({ c, team, player, name }) => {
+          let status = '';
+          if (c.status === 'won') status = '🏆';
+          else if (c.status === 'out') status = '✗';
+          else if (showResult) status = c.lastWasCorrect ? '✓' : c.answerIndex === null ? '⏱' : `✗ ${LETTERS[c.answerIndex]}`;
+          else status = c.answeredIds.length > 0 ? '…✓' : '…';
+          const wrong = showResult && c.status === 'playing' && c.lastWasCorrect === false && correctIdx !== null;
+          return (
+            <span
+              key={c.id}
+              className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] ${
+                c.status === 'out' ? 'opacity-50 border-white/10' : wrong ? 'border-red-400/40' : 'border-white/15'
+              }`}
+              style={team ? { borderColor: `${team.color}80`, color: team.color } : undefined}
+            >
+              {team ? <TeamBadge team={team} size="sm" iconOnly /> : <span className="text-white/90">{player?.isBot ? '🤖 ' : ''}{name}</span>}
+              {team && <span>{name}</span>}
+              <span className="font-mono text-amber-200/90">{formatRub(c.sum)}</span>
+              <span className="opacity-80">{status}</span>
+            </span>
           );
         })}
       </div>

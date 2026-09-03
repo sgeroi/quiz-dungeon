@@ -376,7 +376,7 @@ function beginPickPhase(io: Server, state: GameState, data: JCoopRoomData): void
     data.result = 'defeat';
     state.phase = 'defeat';
     pushState(io, state, data);
-    io.to(state.roomCode).emit('game-over', false, {});
+    io.to(state.roomCode).emit('game-over', false, { teamMode: 'coop' });
     return;
   }
 
@@ -386,7 +386,7 @@ function beginPickPhase(io: Server, state: GameState, data: JCoopRoomData): void
     data.result = 'defeat';
     state.phase = 'defeat';
     pushState(io, state, data);
-    io.to(state.roomCode).emit('game-over', false, { bossHp: data.boss.hp, bossMax: data.boss.max });
+    io.to(state.roomCode).emit('game-over', false, { teamMode: 'coop', bossHp: data.boss.hp, bossMax: data.boss.max });
     return;
   }
 
@@ -644,6 +644,7 @@ function finishGame(io: Server, state: GameState, victory: boolean): void {
   pushState(io, state, data);
 
   io.to(state.roomCode).emit('game-over', victory, {
+    teamMode: 'coop',
     bossHp: data.boss.hp,
     bossMax: data.boss.max,
     cellsPlayed: [...data.grid.values()].filter((c) => c.played).length,

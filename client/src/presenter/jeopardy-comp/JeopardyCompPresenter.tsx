@@ -5,8 +5,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useStore } from '../../store';
 import { GAME_MODES } from '../../types';
-import type { GameState, Player } from '../../types';
+import type { GameState, Player, Team } from '../../types';
 import { PresenterTimer } from '../DefaultPresenter';
+import TeamBadge from '../../components/TeamBadge';
 
 interface PublicCell {
   value: number;
@@ -31,11 +32,15 @@ interface JeopardyPublic {
   grid: { topics: string[]; cells: Record<string, PublicCell[]> };
   played: string[];
   captainId: string | null;
+  captainTeamId?: string | null;
   scores: Record<string, number>;
+  /** teams-format only: teamId -> total. */
+  teamScores?: Record<string, number> | null;
   currentCell: OpenCell | null;
   buzzerOpen: boolean;
   currentAnswererId: string | null;
   blockedIds: string[];
+  blockedTeamIds?: string[];
   reveal: Reveal | null;
   message: string | null;
   answerTimeSec: number;
@@ -76,6 +81,23 @@ export default function JeopardyCompPresenter() {
       }))
       .sort((a, b) => b.score - a.score);
   }, [j, gameState]);
+
+  const isTeams = gameState?.teamMode === 'teams' && (gameState.teams?.length ?? 0) > 0;
+  const teamBoard = useMemo(() => {
+    if (!isTeams || !j || !gameState) return [];
+    const ts = j.teamScores ?? {};
+    return gameState.teams
+      .map((team) => ({
+        team,
+        score: ts[team.id] ?? 0,
+        isCaptain: team.id === j.captainTeamId,
+        isBlocked: !!j.blockedTeamIds?.includes(team.id),
+        hasAnswerer: !!j.currentAnswererId && gameState.players[j.currentAnswererId]?.teamId === team.id,
+        members: Object.values(gameState.players).filter((p) => p.teamId === team.id),
+      }))
+      .filter((r) => r.members.length > 0)
+      .sort((a, b) => b.score - a.score);
+  }, [isTeams, j, gameState]);
 
   if (!gameState || !j) {
     return <Preparing />;
@@ -146,9 +168,27 @@ export default function JeopardyCompPresenter() {
         </div>
 
         <div className="glass-panel p-5 flex-1 min-h-0 flex flex-col gap-3 overflow-hidden">
-          <div className="text-[20px] font-bold uppercase tracking-widest text-[var(--color-dungeon-muted)]">Табло</div>
+          <div className="text-[20px] font-bold uppercase tracking-widest text-[var(--color-dungeon-muted)]">
+            {isTeams ? 'Табло команд' : 'Табло'}
+          </div>
           <div className="flex flex-col gap-2.5 overflow-hidden">
-            {board.map(({ player, score, isCaptain, isAnswerer, isBlocked }) => (
+            {isTeams
+              ? teamBoard.map((r) => (
+                  <TeamRow
+                    key={r.team.id}
+                    team={r.team}
+                    score={r.score}
+                    isCaptain={r.isCaptain}
+                    hasAnswerer={r.hasAnswerer}
+                    isBlocked={r.isBlocked}
+                    members={r.members}
+                    captainId={j.captainId}
+                    answererId={j.currentAnswererId}
+                    blockedIds={j.blockedIds}
+                    compact={teamBoard.length > 2}
+                  />
+                ))
+              : board.map(({ player, score, isCaptain, isAnswerer, isBlocked }) => (
               <ScoreRow
                 key={player.id}
                 player={player}
@@ -340,6 +380,62 @@ function QuestionPanel({
               </span>
               <span className="text-[32px] font-bold leading-tight">{opt}</span>
             </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/** teams-format board row: team badge + total, roster with status marks underneath. */
+function TeamRow({
+  team,
+  score,
+  isCaptain,
+  hasAnswerer,
+  isBlocked,
+  members,
+  captainId,
+  answererId,
+  blockedIds,
+  compact,
+}: {
+  team: Team;
+  score: number;
+  isCaptain: boolean;
+  hasAnswerer: boolean;
+  isBlocked: boolean;
+  members: Player[];
+  captainId: string | null;
+  answererId: string | null;
+  blockedIds: string[];
+  compact: boolean;
+}) {
+  const scoreCls = score > 0 ? 'text-[var(--color-dungeon-gold)]' : score < 0 ? 'text-[#FF6B6B]' : 'text-white/60';
+  return (
+    <div
+      className={`flex flex-col gap-2 rounded-2xl border px-4 ${compact ? 'py-2.5' : 'py-4'} transition-all ${
+        hasAnswerer ? 'shadow-[0_0_24px_rgba(255,219,16,0.3)]' : ''
+      } ${isBlocked ? 'opacity-45' : ''}`}
+      style={{
+        backgroundColor: hasAnswerer ? `${team.color}26` : `${team.color}12`,
+        borderColor: hasAnswerer || isCaptain ? team.color : `${team.color}66`,
+      }}
+    >
+      <div className="flex items-center gap-3">
+        <span className="w-[36px] text-center text-[26px] shrink-0">{hasAnswerer ? '🎤' : isCaptain ? '👑' : isBlocked ? '✗' : ''}</span>
+        <TeamBadge team={team} size={compact ? 'md' : 'lg'} />
+        <span className={`ml-auto shrink-0 font-black tabular-nums ${compact ? 'text-[34px]' : 'text-[44px]'} ${scoreCls}`}>{score}</span>
+      </div>
+      <div className={`flex flex-wrap gap-x-4 gap-y-1 pl-[48px] ${compact ? 'text-[20px]' : 'text-[24px]'} font-bold text-white/80`}>
+        {members.map((m) => {
+          const mark = m.id === answererId ? '🎤' : m.id === captainId ? '👑' : blockedIds.includes(m.id) ? '✗' : m.isBot ? '🤖' : '';
+          const dim = blockedIds.includes(m.id) && m.id !== answererId;
+          return (
+            <span key={m.id} className={`truncate max-w-[200px] ${dim ? 'opacity-50 line-through' : ''}`}>
+              {mark && <span className="mr-1">{mark}</span>}
+              {m.name}
+            </span>
           );
         })}
       </div>

@@ -6,9 +6,11 @@ import { useEffect, useMemo, useState } from 'react';
 import { socket } from '../../socket';
 import { useStore } from '../../store';
 import { GAME_MODES } from '../../types';
-import type { Floor, GameState, Monster, PerkId, Player, RoundResult } from '../../types';
+import type { Floor, GameState, Monster, PerkId, Player, RoundResult, Team, TeamMode } from '../../types';
 import { CLASS_DEFS } from '../../classData';
 import { PresenterTimer } from '../DefaultPresenter';
+import TeamBadge from '../../components/TeamBadge';
+import { monsterFor, playersOfTeam, rankedPlayers, scoresOf, teamScoresOf, teamsInPlay } from '../../components/classicTeams';
 
 export const OPTION_LETTERS = ['A', 'B', 'C', 'D', 'E', 'F'];
 
@@ -64,6 +66,18 @@ export interface LoopView {
   reveal: number | null;
   isResults: boolean;
   isAnswering: boolean;
+  // ---- team formats (classic) ----
+  teamMode: TeamMode;
+  isTeams: boolean;
+  isFfa: boolean;
+  /** Non-empty teams (teams-mode), else []. */
+  teams: Team[];
+  /** Every captain / sacrifice of the current floor (one per team in teams-mode). */
+  captainIds: Set<string>;
+  sacrificeIds: Set<string>;
+  /** ffa: playerId -> score; teams: teamId -> score. */
+  scores: Record<string, number>;
+  teamScores: Record<string, number>;
 }
 
 export function useLoopView(gs: GameState): LoopView {
@@ -84,6 +98,23 @@ export function useLoopView(gs: GameState): LoopView {
       isResults && results && !isChain && !isPersonal && gs.currentQuestion && typeof results.correctIndex === 'number'
         ? results.correctIndex
         : null;
+    const teamMode: TeamMode = gs.teamMode ?? 'coop';
+    const isTeams = teamMode === 'teams';
+    const teams = isTeams ? teamsInPlay(gs) : [];
+    const captainId = isTeams ? null : gs.captainId ?? storeCaptain ?? null;
+    const sacrificeId = isTeams ? null : gs.sacrificePlayerId ?? storeSacrifice ?? null;
+    const captainIds = new Set<string>();
+    const sacrificeIds = new Set<string>();
+    if (isTeams) {
+      for (const t of teams) {
+        const tb = gs.teamBattle?.[t.id];
+        if (tb?.captainId) captainIds.add(tb.captainId);
+        if (tb?.sacrificeId) sacrificeIds.add(tb.sacrificeId);
+      }
+    } else {
+      if (captainId) captainIds.add(captainId);
+      if (sacrificeId) sacrificeIds.add(sacrificeId);
+    }
     return {
       gs,
       floor,
@@ -91,14 +122,22 @@ export function useLoopView(gs: GameState): LoopView {
       players,
       alive: players.filter((p) => p.isAlive),
       results,
-      captainId: gs.captainId ?? storeCaptain ?? null,
-      sacrificeId: gs.sacrificePlayerId ?? storeSacrifice ?? null,
+      captainId,
+      sacrificeId,
       chainPlayerId: gs.chainCurrentPlayer ?? chainTurn?.playerId ?? null,
       isChain,
       isPersonal,
       reveal,
       isResults,
       isAnswering,
+      teamMode,
+      isTeams,
+      isFfa: teamMode === 'ffa',
+      teams,
+      captainIds,
+      sacrificeIds,
+      scores: scoresOf(gs),
+      teamScores: teamScoresOf(gs),
     };
   }, [gs, storeCaptain, storeSacrifice, chainTurn]);
 }
@@ -121,12 +160,21 @@ export function whoAnswersLabel(v: LoopView): { icon: string; text: string } {
   const p = v.floor?.params;
   if (!p) return { icon: '❔', text: '' };
   if (v.isPersonal) return { icon: '🎯', text: 'У каждого свой вопрос' };
+  const names = (ids: Set<string>) => [...ids].map((id) => v.gs.players[id]?.name).filter(Boolean).join(', ');
   switch (p.whoAnswers) {
     case 'captain': {
+      if (v.isTeams) {
+        const n = names(v.captainIds);
+        return { icon: '👑', text: n ? `Капитаны команд — ${n}` : 'Отвечают капитаны команд' };
+      }
       const c = v.captainId ? v.gs.players[v.captainId] : null;
       return { icon: '👑', text: c ? `Отвечает капитан — ${c.name}` : 'Отвечает капитан' };
     }
     case 'sacrifice': {
+      if (v.isTeams) {
+        const n = names(v.sacrificeIds);
+        return { icon: '💀', text: n ? `Жертвы команд — ${n}` : 'В каждой команде — своя жертва' };
+      }
       const s = v.sacrificeId ? v.gs.players[v.sacrificeId] : null;
       return { icon: '💀', text: s ? `Жертва — ${s.name}. Один за всех` : 'Один герой отвечает за всех' };
     }
@@ -195,6 +243,12 @@ export function LoopHeader({ v, showTimer }: { v: LoopView; showTimer: boolean }
           )}
           {params?.bet && (
             <span className="inline-flex items-center gap-2 rounded-full bg-white/10 px-5 py-2 text-[22px] font-bold text-white/80">🎲 Ставка капитана</span>
+          )}
+          {v.isTeams && (
+            <span className="inline-flex items-center gap-2 rounded-full bg-white/10 px-5 py-2 text-[22px] font-bold text-white/80">⚔️ Команда на команду</span>
+          )}
+          {v.isFfa && (
+            <span className="inline-flex items-center gap-2 rounded-full bg-white/10 px-5 py-2 text-[22px] font-bold text-white/80">🥇 Каждый сам за себя</span>
           )}
         </div>
       </div>
@@ -266,6 +320,78 @@ export function MonsterPanel({ v }: { v: LoopView }) {
   );
 }
 
+/** teams-mode: one compact monster card per team (own HP, own score, round damage). */
+export function TeamMonsterPanels({ v }: { v: LoopView }) {
+  const { gs, teams } = v;
+  const base = v.monster;
+  if (!base || teams.length === 0) return null;
+  const compact = teams.length > 2;
+  const ranked = teams.slice().sort((a, b) => (v.teamScores[b.id] ?? 0) - (v.teamScores[a.id] ?? 0));
+  const leaderId = ranked[0] && (v.teamScores[ranked[0].id] ?? 0) > 0 ? ranked[0].id : null;
+  return (
+    <div className="h-full min-h-0 grid gap-4" style={{ gridTemplateRows: `repeat(${teams.length}, minmax(0, 1fr))` }} data-testid="team-monsters">
+      {teams.map((t) => {
+        const tb = gs.teamBattle?.[t.id];
+        const m = monsterFor(gs, t.id) ?? base;
+        const hpPct = Math.max(0, Math.min(1, m.currentHp / Math.max(1, m.maxHp)));
+        const dead = m.currentHp <= 0 || !!tb?.floorCleared;
+        const r = v.isResults ? tb : null;
+        const members = playersOfTeam(gs, t.id);
+        const aliveN = members.filter((p) => p.isAlive).length;
+        return (
+          <div
+            key={t.id}
+            className={`relative flex flex-col gap-2 rounded-3xl px-5 ${compact ? 'py-3' : 'py-4'} border min-h-0 overflow-hidden`}
+            style={{ backgroundColor: `${t.color}14`, borderColor: `${t.color}${leaderId === t.id ? 'cc' : '55'}`, boxShadow: leaderId === t.id ? `0 0 30px ${t.color}40` : undefined }}
+          >
+            <div className="flex items-center justify-between gap-3">
+              <TeamBadge team={t} size={compact ? 'md' : 'lg'} />
+              <div className="text-right">
+                <div className="text-[16px] font-bold uppercase tracking-widest text-[var(--color-dungeon-muted)] leading-none">Счёт</div>
+                <div className={`${compact ? 'text-[34px]' : 'text-[44px]'} font-black leading-none tabular-nums`} style={{ color: t.color }}>{v.teamScores[t.id] ?? 0}</div>
+              </div>
+            </div>
+            <div className="flex items-center gap-4 min-h-0 flex-1">
+              <div className={`relative shrink-0 ${compact ? 'h-[72px] w-[72px]' : 'h-[120px] w-[120px]'} flex items-center justify-center transition-all duration-700 ${dead ? 'grayscale opacity-30 rotate-12' : ''}`}>
+                <SpriteImg
+                  src={monsterSpriteUrl(m)}
+                  fallback={m.emoji}
+                  className={`h-full w-full object-contain ${compact ? 'text-[56px]' : 'text-[90px]'} leading-none animate-[monsterIdle_2s_ease-in-out_infinite]`}
+                />
+                {r && (r.lastDamageDealt ?? 0) > 0 && (
+                  <div className="absolute -top-3 -right-4 text-[34px] font-black text-[var(--color-dungeon-gold)] drop-shadow-[0_0_14px_rgba(255,219,16,0.7)] animate-[fadeIn_0.4s_ease-out]">
+                    −{r.lastDamageDealt}
+                  </div>
+                )}
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className={`${compact ? 'text-[22px]' : 'text-[28px]'} font-black leading-tight truncate`}>
+                  {m.isBoss && <span className="text-[var(--color-dungeon-accent)] mr-2">БОСС</span>}{m.name}
+                </div>
+                <div className="flex justify-between text-[18px] font-bold text-white/80 tabular-nums mt-1">
+                  <span>HP</span>
+                  <span>{m.currentHp} / {m.maxHp}</span>
+                </div>
+                <div className="hp-bar w-full h-5 rounded-full bg-white/10 overflow-hidden">
+                  <div className="h-full rounded-full transition-[width] duration-700" style={{ width: `${hpPct * 100}%`, background: `linear-gradient(90deg, #FF4848, ${t.color})` }} />
+                </div>
+                <div className="flex items-center justify-between text-[17px] font-bold text-white/60 mt-1">
+                  <span>⚔️ {m.attack} · 🧑 {aliveN}/{members.length}</span>
+                  {dead ? (
+                    <span className="text-[var(--color-dungeon-heal)] font-black">Повержен!</span>
+                  ) : r && (r.lastDamageTaken ?? 0) > 0 ? (
+                    <span className="text-[#FF9A9A] font-black">−{r.lastDamageTaken} команде</span>
+                  ) : null}
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 /** Question + options with reveal and (after reveal) who picked what. */
 export function QuestionPanel({ v }: { v: LoopView }) {
   const { gs, reveal } = v;
@@ -315,11 +441,15 @@ export function QuestionPanel({ v }: { v: LoopView }) {
               </div>
               {pickers.length > 0 && (
                 <div className="flex flex-wrap gap-2 pl-[80px]">
-                  {pickers.map((p) => (
-                    <span key={p.id} className={`rounded-full px-3 py-1 text-[18px] font-bold ${isCorrect ? 'bg-[var(--color-dungeon-heal)]/30 text-[var(--color-dungeon-heal)]' : 'bg-[#FF4848]/25 text-[#FF9A9A]'}`}>
-                      {p.name}
-                    </span>
-                  ))}
+                  {pickers.map((p) => {
+                    const team = v.isTeams ? v.teams.find((t) => t.id === p.teamId) : undefined;
+                    return (
+                      <span key={p.id} className={`inline-flex items-center gap-2 rounded-full px-3 py-1 text-[18px] font-bold ${isCorrect ? 'bg-[var(--color-dungeon-heal)]/30 text-[var(--color-dungeon-heal)]' : 'bg-[#FF4848]/25 text-[#FF9A9A]'}`}>
+                        {team && <span className="inline-block w-3.5 h-3.5 rounded-full" style={{ backgroundColor: team.color }} />}
+                        {p.name}
+                      </span>
+                    );
+                  })}
                 </div>
               )}
             </div>
@@ -420,6 +550,7 @@ export function RoundSummary({ v }: { v: LoopView }) {
   if (!r) return null;
   const { gs } = v;
   const params = v.floor?.params;
+  if (v.isTeams) return <TeamRoundSummary v={v} />;
   const fallen = r.playersHit.map((id) => gs.players[id]).filter((p) => p && !p.isAlive);
   const hit = r.playersHit.map((id) => gs.players[id]).filter(Boolean);
   const nobodyRight = !v.isChain && r.damageDealt === 0;
@@ -450,6 +581,44 @@ export function RoundSummary({ v }: { v: LoopView }) {
   );
 }
 
+/** teams-mode results strip: one line per team. */
+function TeamRoundSummary({ v }: { v: LoopView }) {
+  const { gs, teams } = v;
+  const r = v.results!;
+  const floorDone = !!v.floor?.isCompleted;
+  const fallen = r.playersHit.map((id) => gs.players[id]).filter((p) => p && !p.isAlive);
+  return (
+    <div className="glass-panel flex flex-col gap-2 px-8 py-3 animate-[fadeIn_0.3s_ease-out]">
+      <div className="flex items-center gap-8">
+        <div className={`text-[34px] font-black whitespace-nowrap ${floorDone ? 'text-[var(--color-dungeon-heal)]' : 'text-[var(--color-dungeon-gold)]'}`}>
+          {floorDone ? 'Этаж пройден!' : 'Раунд сыгран'}
+        </div>
+        <div className="flex flex-wrap gap-x-8 gap-y-1 items-center">
+          {teams.map((t) => {
+            const tb = gs.teamBattle?.[t.id];
+            const dealt = tb?.lastDamageDealt ?? 0;
+            const taken = tb?.lastDamageTaken ?? 0;
+            return (
+              <div key={t.id} className="flex items-center gap-3 text-[24px] font-extrabold">
+                <TeamBadge team={t} size="md" />
+                <span className="text-[var(--color-dungeon-gold)] tabular-nums">⚔️ {dealt}</span>
+                <span className="text-[#FF9A9A] tabular-nums">💥 {taken}</span>
+                {tb?.lastDefeated && <span className="text-[var(--color-dungeon-heal)]">повержен!</span>}
+                {!tb?.lastDefeated && tb?.floorCleared && <span className="text-white/50">уже без монстра</span>}
+              </div>
+            );
+          })}
+        </div>
+        {fallen.length > 0 && (
+          <div className="ml-auto rounded-full bg-[#FF4848]/20 text-[#FF9A9A] px-6 py-2 text-[24px] font-black whitespace-nowrap">
+            💀 Пали: {fallen.map((p) => p!.name).join(', ')}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function Stat({ icon, label, value, color }: { icon: string; label: string; value: number; color: string }) {
   return (
     <div className="flex items-center gap-3">
@@ -476,82 +645,121 @@ export function ClassIcon({ player, size }: { player: Player; size: number }) {
   );
 }
 
-/** Team board: every player with class, HP, status, streak, perks. */
+/** Team board: every player with class, HP, status, streak, perks.
+ *  teams — grouped by team with team score; ffa — ranked by personal score. */
 export function TeamBoard({ v, showPerks }: { v: LoopView; showPerks?: boolean }) {
   const { gs, players } = v;
+  if (v.isTeams && v.teams.length > 0) {
+    const maxMembers = Math.max(1, ...v.teams.map((t) => playersOfTeam(gs, t.id).length));
+    const compact = maxMembers > 2 || v.teams.length > 2;
+    const ranked = v.teams.slice().sort((a, b) => (v.teamScores[b.id] ?? 0) - (v.teamScores[a.id] ?? 0));
+    const leaderId = ranked[0] && (v.teamScores[ranked[0].id] ?? 0) > 0 ? ranked[0].id : null;
+    return (
+      <div className="grid gap-4" style={{ gridTemplateColumns: `repeat(${v.teams.length}, minmax(0, 1fr))` }} data-testid="team-board">
+        {v.teams.map((t) => {
+          const members = playersOfTeam(gs, t.id);
+          return (
+            <div key={t.id} className="rounded-3xl p-3 border flex flex-col gap-2" style={{ backgroundColor: `${t.color}10`, borderColor: `${t.color}${leaderId === t.id ? 'bb' : '44'}` }}>
+              <div className="flex items-center justify-between px-1">
+                <TeamBadge team={t} size="md" />
+                <span className="text-[26px] font-black tabular-nums" style={{ color: t.color }}>{v.teamScores[t.id] ?? 0}</span>
+              </div>
+              <div className="grid gap-2" style={{ gridTemplateColumns: `repeat(${Math.min(2, Math.max(1, members.length))}, minmax(0, 1fr))` }}>
+                {members.map((p) => <PlayerTile key={p.id} v={v} p={p} compact={compact} showPerks={showPerks} />)}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
+  const list = v.isFfa ? rankedPlayers(gs) : players;
+  const cols = Math.min(4, Math.max(1, list.length));
+  const rows = Math.ceil(list.length / cols);
+  return (
+    <div className="grid gap-4" style={{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))` }} data-testid={v.isFfa ? 'ffa-board' : 'party-board'}>
+      {list.map((p, i) => <PlayerTile key={p.id} v={v} p={p} compact={rows > 1} showPerks={showPerks} rank={v.isFfa ? i + 1 : undefined} />)}
+    </div>
+  );
+}
+
+const RANK_MEDALS = ['🥇', '🥈', '🥉'];
+
+function PlayerTile({ v, p, compact, showPerks, rank }: { v: LoopView; p: Player; compact: boolean; showPerks?: boolean; rank?: number }) {
+  const { gs } = v;
   const params = v.floor?.params;
   const r = v.isResults ? v.results : null;
-  const cols = Math.min(4, Math.max(1, players.length));
-  const rows = Math.ceil(players.length / cols);
+  const rows = compact ? 2 : 1;
+  const hpPct = p.maxPersonalHp > 0 ? Math.max(0, Math.min(1, p.personalHp / p.maxPersonalHp)) : 0;
+  const def = p.playerClass ? CLASS_DEFS[p.playerClass] : null;
+  const isCaptain = params?.whoAnswers === 'captain' && v.captainIds.has(p.id);
+  const isSacrifice = params?.whoAnswers === 'sacrifice' && v.sacrificeIds.has(p.id);
+  const isChainTurn = v.isChain && p.id === v.chainPlayerId && gs.phase === 'chain-turn';
+  const mustAnswer =
+    v.isAnswering && p.isAlive && (params?.whoAnswers === 'everyone' || isCaptain || isSacrifice);
+  const answered = p.currentAnswer !== null && p.currentAnswer !== undefined;
+  const wasHit = r ? r.playersHit.includes(p.id) : false;
+  const dmg = r?.playerDamage?.[p.id];
+  const answeredRight = r && !v.isChain && (v.isPersonal ? (dmg ?? 0) > 0 : r.playerAnswers[p.id] === r.correctIndex);
+  const participated = r && (params?.whoAnswers === 'everyone' || v.captainIds.has(p.id) || v.sacrificeIds.has(p.id)) && !v.isChain;
+  const highlight = isCaptain || isSacrifice || isChainTurn;
+  const score = v.isFfa ? v.scores[p.id] ?? 0 : null;
   return (
-    <div className="grid gap-4" style={{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))` }}>
-      {players.map((p) => {
-        const hpPct = p.maxPersonalHp > 0 ? Math.max(0, Math.min(1, p.personalHp / p.maxPersonalHp)) : 0;
-        const def = p.playerClass ? CLASS_DEFS[p.playerClass] : null;
-        const isCaptain = params?.whoAnswers === 'captain' && p.id === v.captainId;
-        const isSacrifice = params?.whoAnswers === 'sacrifice' && p.id === v.sacrificeId;
-        const isChainTurn = v.isChain && p.id === v.chainPlayerId && gs.phase === 'chain-turn';
-        const mustAnswer =
-          v.isAnswering && p.isAlive && (params?.whoAnswers === 'everyone' || isCaptain || isSacrifice);
-        const answered = p.currentAnswer !== null && p.currentAnswer !== undefined;
-        const wasHit = r ? r.playersHit.includes(p.id) : false;
-        const dmg = r?.playerDamage?.[p.id];
-        const answeredRight = r && !v.isChain && (v.isPersonal ? (dmg ?? 0) > 0 : r.playerAnswers[p.id] === r.correctIndex);
-        const participated = r && (params?.whoAnswers === 'everyone' || p.id === v.captainId || p.id === v.sacrificeId) && !v.isChain;
-        const highlight = isCaptain || isSacrifice || isChainTurn;
-        return (
-          <div
-            key={p.id}
-            className={`relative glass-panel px-5 flex flex-col gap-2 transition-all ${rows > 1 ? 'py-2' : 'py-3'} ${!p.isAlive ? 'opacity-40 grayscale' : ''} ${highlight ? 'ring-2 ring-[var(--color-dungeon-gold)] shadow-[0_0_30px_rgba(255,219,16,0.25)]' : ''} ${wasHit && p.isAlive ? 'animate-[shake_0.5s_ease-in-out]' : ''}`}
-          >
-            <div className="flex items-center gap-3">
-              <ClassIcon player={p} size={rows > 1 ? 40 : 52} />
-              <div className="min-w-0 flex-1">
-                <div className="text-[28px] font-extrabold truncate leading-tight">
-                  {isCaptain && '👑 '}{isSacrifice && '💀 '}{isChainTurn && '🔗 '}{p.name}
-                </div>
-                <div className="text-[18px] font-bold text-[var(--color-dungeon-muted)] truncate leading-tight">
-                  {def ? def.nameRu : p.isBot ? 'Бот' : 'Герой'}
-                  {p.streak > 1 && <span className="text-[#FFB020]"> · 🔥{p.streak}</span>}
-                  {typeof p.betAmount === 'number' && p.betAmount > 0 && <span className="text-[var(--color-dungeon-gold)]"> · ставка {p.betAmount}</span>}
-                </div>
-              </div>
-              {!p.isAlive ? (
-                <span className="text-[30px]">💀</span>
-              ) : r && participated ? (
-                <span className={`rounded-full px-3 py-1 text-[20px] font-extrabold ${answeredRight ? 'bg-[var(--color-dungeon-heal)]/25 text-[var(--color-dungeon-heal)]' : 'bg-[#FF4848]/25 text-[#FF9A9A]'}`}>
-                  {answeredRight ? (typeof dmg === 'number' && dmg > 0 ? `+${dmg}` : 'верно') : 'мимо'}
-                </span>
-              ) : mustAnswer ? (
-                <span className={`rounded-full px-3 py-1 text-[18px] font-extrabold ${answered ? 'bg-[var(--color-dungeon-heal)]/25 text-[var(--color-dungeon-heal)]' : 'bg-white/5 text-white/40'}`}>
-                  {answered ? 'ответил' : 'думает…'}
-                </span>
-              ) : null}
-            </div>
-            <div className="flex items-center gap-3">
-              <div className="flex-1 h-3 rounded-full bg-white/10 overflow-hidden">
-                <div
-                  className={`h-full rounded-full transition-[width] duration-700 ${hpPct > 0.5 ? 'bg-[var(--color-dungeon-heal)]' : hpPct > 0.25 ? 'bg-[#FFB020]' : 'bg-[#FF4848]'}`}
-                  style={{ width: `${hpPct * 100}%` }}
-                />
-              </div>
-              <span className="text-[18px] font-bold text-white/70 tabular-nums w-[84px] text-right">{p.personalHp}/{p.maxPersonalHp}</span>
-            </div>
-            {showPerks && p.perks && p.perks.length > 0 && (
-              <div className="flex flex-wrap gap-1.5 -mt-1">
-                {p.perks.map((perk, i) => {
-                  const l = PERK_LABELS[perk.id];
-                  return (
-                    <span key={i} title={l?.name} className="rounded-full bg-[var(--color-dungeon-purple)]/20 text-[var(--color-dungeon-purple)] px-2.5 py-0.5 text-[17px] font-bold whitespace-nowrap">
-                      {l?.emoji ?? '🎁'} {l?.name ?? perk.id}{perk.charges > 1 ? ` ×${perk.charges}` : ''}
-                    </span>
-                  );
-                })}
-              </div>
-            )}
+    <div
+      key={p.id}
+      className={`relative glass-panel px-5 flex flex-col gap-2 transition-all ${rows > 1 ? 'py-2' : 'py-3'} ${!p.isAlive ? 'opacity-40 grayscale' : ''} ${highlight ? 'ring-2 ring-[var(--color-dungeon-gold)] shadow-[0_0_30px_rgba(255,219,16,0.25)]' : ''} ${wasHit && p.isAlive ? 'animate-[shake_0.5s_ease-in-out]' : ''}`}
+    >
+      <div className="flex items-center gap-3">
+        {rank !== undefined && (
+          <span className={`shrink-0 ${rows > 1 ? 'text-[24px] w-[36px]' : 'text-[30px] w-[44px]'} text-center font-black ${rank <= 3 ? '' : 'text-white/50'}`}>
+            {RANK_MEDALS[rank - 1] ?? `#${rank}`}
+          </span>
+        )}
+        <ClassIcon player={p} size={rows > 1 ? 40 : 52} />
+        <div className="min-w-0 flex-1">
+          <div className="text-[28px] font-extrabold truncate leading-tight">
+            {isCaptain && '👑 '}{isSacrifice && '💀 '}{isChainTurn && '🔗 '}{p.name}
+            {score !== null && <span className="text-[var(--color-dungeon-gold)] tabular-nums"> · {score}</span>}
           </div>
-        );
-      })}
+          <div className="text-[18px] font-bold text-[var(--color-dungeon-muted)] truncate leading-tight">
+            {def ? def.nameRu : p.isBot ? 'Бот' : 'Герой'}
+            {p.streak > 1 && <span className="text-[#FFB020]"> · 🔥{p.streak}</span>}
+            {typeof p.betAmount === 'number' && p.betAmount > 0 && <span className="text-[var(--color-dungeon-gold)]"> · ставка {p.betAmount}</span>}
+          </div>
+        </div>
+        {!p.isAlive ? (
+          <span className="text-[30px]">💀</span>
+        ) : r && participated ? (
+          <span className={`rounded-full px-3 py-1 text-[20px] font-extrabold ${answeredRight ? 'bg-[var(--color-dungeon-heal)]/25 text-[var(--color-dungeon-heal)]' : 'bg-[#FF4848]/25 text-[#FF9A9A]'}`}>
+            {answeredRight ? (typeof dmg === 'number' && dmg > 0 ? `+${dmg}` : 'верно') : 'мимо'}
+          </span>
+        ) : mustAnswer ? (
+          <span className={`rounded-full px-3 py-1 text-[18px] font-extrabold ${answered ? 'bg-[var(--color-dungeon-heal)]/25 text-[var(--color-dungeon-heal)]' : 'bg-white/5 text-white/40'}`}>
+            {answered ? 'ответил' : 'думает…'}
+          </span>
+        ) : null}
+      </div>
+      <div className="flex items-center gap-3">
+        <div className="flex-1 h-3 rounded-full bg-white/10 overflow-hidden">
+          <div
+            className={`h-full rounded-full transition-[width] duration-700 ${hpPct > 0.5 ? 'bg-[var(--color-dungeon-heal)]' : hpPct > 0.25 ? 'bg-[#FFB020]' : 'bg-[#FF4848]'}`}
+            style={{ width: `${hpPct * 100}%` }}
+          />
+        </div>
+        <span className="text-[18px] font-bold text-white/70 tabular-nums w-[84px] text-right">{p.personalHp}/{p.maxPersonalHp}</span>
+      </div>
+      {showPerks && p.perks && p.perks.length > 0 && (
+        <div className="flex flex-wrap gap-1.5 -mt-1">
+          {p.perks.map((perk, i) => {
+            const l = PERK_LABELS[perk.id];
+            return (
+              <span key={i} title={l?.name} className="rounded-full bg-[var(--color-dungeon-purple)]/20 text-[var(--color-dungeon-purple)] px-2.5 py-0.5 text-[17px] font-bold whitespace-nowrap">
+                {l?.emoji ?? '🎁'} {l?.name ?? perk.id}{perk.charges > 1 ? ` ×${perk.charges}` : ''}
+              </span>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
@@ -582,6 +790,8 @@ export function FloorIntro({ v }: { v: LoopView }) {
             {params.speedScaling && <Rule icon="⚡" text="Чем быстрее ответ — тем сильнее удар" />}
             {params.bet && <Rule icon="🎲" text="Капитан делает ставку: больше риск — больше урон" />}
             {params.damageMode === 'wrong-only' && <Rule icon="🎯" text="Урон получают только ошибившиеся" />}
+            {v.isTeams && <Rule icon="⚔️" text="У каждой команды свой монстр — очки за урон и за добивание" />}
+            {v.isFfa && <Rule icon="🥇" text="Личный зачёт — очки за каждый верный ответ" />}
           </div>
         </div>
         {monster && (
@@ -636,8 +846,8 @@ export function BattleLayout({ v, centre, showPerks }: { v: LoopView; centre: Re
   return (
     <div className="h-full flex flex-col gap-5 p-10 pt-4">
       <LoopHeader v={v} showTimer={v.isAnswering || v.gs.phase === 'chain-turn'} />
-      <div className="flex-1 min-h-0 grid grid-cols-[400px_minmax(0,1fr)] gap-8 overflow-hidden">
-        <MonsterPanel v={v} />
+      <div className={`flex-1 min-h-0 grid ${v.isTeams ? 'grid-cols-[520px_minmax(0,1fr)]' : 'grid-cols-[400px_minmax(0,1fr)]'} gap-8 overflow-hidden`}>
+        {v.isTeams ? <TeamMonsterPanels v={v} /> : <MonsterPanel v={v} />}
         <div className="min-h-0 flex flex-col gap-5 overflow-hidden">
           <div className="flex-1 min-h-0">{centre}</div>
           {v.isResults && <RoundSummary v={v} />}

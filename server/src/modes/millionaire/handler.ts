@@ -1,5 +1,5 @@
-import type { Server, Socket } from 'socket.io';
-import type { GameState } from '../../../../shared/types.ts';
+import type { Server } from 'socket.io';
+import type { GameState, TeamMode } from '../../../../shared/types.ts';
 import type { ModeHandler } from '../types.ts';
 import {
   MILLIONAIRE_QUESTIONS,
@@ -10,8 +10,20 @@ import {
   type MillionaireQuestion,
 } from './questions.ts';
 import { getSimpleData } from '../../data/contentStore.ts';
+import { teamsWithPlayers } from '../../utils/teams.ts';
 
 // ---------- Mode-specific state shape ----------
+//
+// Formats (state.teamMode, see docs/TEAMS.md):
+//   coop  — one "contestant" ('all'): a single pyramid, the first answer of any
+//           player is the party's answer, hints are shared (incl. swap).
+//   ffa   — a contestant per player: everybody plays the same question of the
+//           current level, each with own answer / hints (50:50, audience, friend)
+//           and own safe-haven sum. Losers keep watching.
+//   teams — a contestant per team: team answer = majority of members' votes
+//           (tie → the option that was voted first), hints per team.
+// All contestants that are still playing always share the same level, so the
+// room has a single current question.
 
 interface MillionaireHints {
   fifty: boolean;
@@ -32,79 +44,137 @@ interface FriendData {
   text: string;
 }
 
-interface MillionaireSnapshot {
-  level: number;            // 1..8 — current level being played
+type ContestantStatus = 'playing' | 'out' | 'won';
+
+/** Client-facing view of one pyramid (player / team / whole party). */
+interface ContestantView {
+  id: string;
+  status: ContestantStatus;
   hintsUsed: MillionaireHints;
-  // Hints currently revealed for the active question
-  fiftyEliminated: number[]; // indices of options removed
+  fiftyEliminated: number[];
   audience: AudienceData | null;
   friend: FriendData | null;
-  // Active question
+  /** Players of this contestant who already answered this round. */
+  answeredIds: string[];
+  /** Votes of members (teams). Present in every phase — teammates see each other. */
+  votes: Record<string, number>;
+  /** Resolved answer of this round — only during 'results' (null = no answer / not yet). */
+  answerIndex: number | null;
+  lastWasCorrect: boolean | null;
+  /** Guaranteed / won sum so far. */
+  sum: number;
+  /** Level at which the contestant stopped (0 while playing). */
+  finalLevel: number;
+}
+
+interface MillionaireSnapshot {
+  teamMode: TeamMode;
+  level: number;            // 1..8 — current level being played (shared by all who still play)
+  // Backward-compatible "primary" fields — the coop contestant; null-ish in ffa/teams.
+  hintsUsed: MillionaireHints;
+  fiftyEliminated: number[];
+  audience: AudienceData | null;
+  friend: FriendData | null;
   question: {
     id: string;
     text: string;
     options: string[];
   } | null;
-  correctIndex: number | null;     // hidden from clients (only server knows real value); we still set to -1 for client snapshot
-  // Last result info
+  correctIndex: number | null;     // always -1 for clients
   lastAnswerIndex: number | null;
   lastWasCorrect: boolean | null;
-  // Reveal-phase visuals
   revealCorrectIndex: number | null; // shown on client during 'results'
-  // Final summary (when victory/defeat)
   finalSum: number;
   finalLevel: number;
-  // Pyramid metadata for client display
   pyramid: number[];
-  // Scratch
   usedQuestionIds: string[];
+  // Per-format
+  contestants: Record<string, ContestantView>; // key: 'all' | playerId | teamId
+  scores?: Record<string, number>;       // ffa: playerId -> sum
+  teamScores?: Record<string, number>;   // teams: teamId -> sum
+  /** Contestants still in the game. */
+  playingCount: number;
 }
 
-interface MillionaireRoomData {
-  level: number;
+interface Contestant {
+  id: string;
+  status: ContestantStatus;
   hints: MillionaireHints;
   fiftyEliminated: number[];
   audience: AudienceData | null;
   friend: FriendData | null;
+  votes: Record<string, { index: number; at: number }>;
+  /** Decided answer for the current round (null = not decided yet). */
+  answerIndex: number | null;
+  decided: boolean;
+  lastWasCorrect: boolean | null;
+  finalSum: number;
+  finalLevel: number;
+}
+
+interface MillionaireRoomData {
+  mode: TeamMode;
+  level: number;
+  contestants: Record<string, Contestant>;
   currentQuestion: MillionaireQuestion | null;
   /** Question pool from the chosen content pack. */
   pool: MillionaireQuestion[];
   used: Set<string>;
   timer: ReturnType<typeof setInterval> | null;
   resolveTimeout: ReturnType<typeof setTimeout> | null;
+  botTimeouts: ReturnType<typeof setTimeout>[];
   resolved: boolean;
-  lastAnswerIndex: number | null;
-  lastWasCorrect: boolean | null;
-  finalSum: number;
-  finalLevel: number;
 }
 
 const ROUND_TIME_SEC = 30;
+const COOP_ID = 'all';
 
 const rooms = new Map<string, MillionaireRoomData>();
 
-function getOrInitRoom(roomCode: string): MillionaireRoomData {
-  let data = rooms.get(roomCode);
-  if (!data) {
-    data = {
-      level: 1,
-      hints: { fifty: false, audience: false, friend: false, swap: false },
-      fiftyEliminated: [],
-      audience: null,
-      friend: null,
-      currentQuestion: null,
-      pool: MILLIONAIRE_QUESTIONS,
-      used: new Set(),
-      timer: null,
-      resolveTimeout: null,
-      resolved: false,
-      lastAnswerIndex: null,
-      lastWasCorrect: null,
-      finalSum: 0,
-      finalLevel: 0,
-    };
-    rooms.set(roomCode, data);
+function freshHints(): MillionaireHints {
+  return { fifty: false, audience: false, friend: false, swap: false };
+}
+
+function makeContestant(id: string): Contestant {
+  return {
+    id,
+    status: 'playing',
+    hints: freshHints(),
+    fiftyEliminated: [],
+    audience: null,
+    friend: null,
+    votes: {},
+    answerIndex: null,
+    decided: false,
+    lastWasCorrect: null,
+    finalSum: 0,
+    finalLevel: 0,
+  };
+}
+
+function initRoom(state: GameState): MillionaireRoomData {
+  const mode: TeamMode = state.teamMode ?? 'coop';
+  const contestants: Record<string, Contestant> = {};
+  if (mode === 'ffa') {
+    for (const p of Object.values(state.players)) contestants[p.id] = makeContestant(p.id);
+  } else if (mode === 'teams') {
+    for (const t of teamsWithPlayers(state)) contestants[t.id] = makeContestant(t.id);
+  } else {
+    contestants[COOP_ID] = makeContestant(COOP_ID);
   }
+  const data: MillionaireRoomData = {
+    mode,
+    level: 1,
+    contestants,
+    currentQuestion: null,
+    pool: MILLIONAIRE_QUESTIONS,
+    used: new Set(),
+    timer: null,
+    resolveTimeout: null,
+    botTimeouts: [],
+    resolved: false,
+  };
+  rooms.set(state.roomCode, data);
   return data;
 }
 
@@ -117,6 +187,98 @@ function clearTimers(data: MillionaireRoomData): void {
     clearTimeout(data.resolveTimeout);
     data.resolveTimeout = null;
   }
+  for (const t of data.botTimeouts) clearTimeout(t);
+  data.botTimeouts = [];
+}
+
+// ---------- Contestant helpers ----------
+
+/** Contestant the player acts for (own / team / party). */
+function contestantOf(data: MillionaireRoomData, state: GameState, playerId: string): Contestant | undefined {
+  if (data.mode === 'ffa') return data.contestants[playerId];
+  if (data.mode === 'teams') {
+    const teamId = state.players[playerId]?.teamId;
+    return teamId ? data.contestants[teamId] : undefined;
+  }
+  return data.contestants[COOP_ID];
+}
+
+/** Players belonging to a contestant (live from state, so disconnects are respected). */
+function membersOf(data: MillionaireRoomData, state: GameState, c: Contestant): string[] {
+  const players = Object.values(state.players);
+  if (data.mode === 'ffa') return state.players[c.id] ? [c.id] : [];
+  if (data.mode === 'teams') return players.filter((p) => p.teamId === c.id).map((p) => p.id);
+  return players.map((p) => p.id);
+}
+
+function playing(data: MillionaireRoomData): Contestant[] {
+  return Object.values(data.contestants).filter((c) => c.status === 'playing');
+}
+
+/** Sum guaranteed by the rules when a contestant fails after clearing `reachedLevel` levels. */
+function safeSum(reachedLevel: number): number {
+  if (reachedLevel >= 10) {
+    const idx = Math.min(reachedLevel - 1, PRIZE_PYRAMID.length - 1);
+    return idx >= 0 ? PRIZE_PYRAMID[idx] : 0;
+  }
+  if (reachedLevel >= 5) return 25_000;
+  if (reachedLevel >= 1) return 1_000;
+  return 0;
+}
+
+/** Current sum of a contestant: final one when finished, otherwise the prize of the last cleared level. */
+function sumOf(data: MillionaireRoomData, c: Contestant): number {
+  if (c.status !== 'playing') return c.finalSum;
+  const cleared = data.level - 1;
+  return cleared > 0 ? PRIZE_PYRAMID[Math.min(cleared, PRIZE_PYRAMID.length) - 1] : 0;
+}
+
+/** Majority of votes; ties broken by the option voted first. null when no votes. */
+function majorityVote(votes: Record<string, { index: number; at: number }>): number | null {
+  const entries = Object.values(votes);
+  if (entries.length === 0) return null;
+  const count = new Map<number, { n: number; first: number }>();
+  for (const v of entries) {
+    const cur = count.get(v.index);
+    if (cur) {
+      cur.n++;
+      cur.first = Math.min(cur.first, v.at);
+    } else {
+      count.set(v.index, { n: 1, first: v.at });
+    }
+  }
+  let best: number | null = null;
+  let bestN = -1;
+  let bestFirst = Infinity;
+  for (const [idx, { n, first }] of count) {
+    if (n > bestN || (n === bestN && first < bestFirst)) {
+      best = idx;
+      bestN = n;
+      bestFirst = first;
+    }
+  }
+  return best;
+}
+
+// ---------- Snapshot ----------
+
+function viewOf(data: MillionaireRoomData, state: GameState, c: Contestant): ContestantView {
+  const votes: Record<string, number> = {};
+  for (const [pid, v] of Object.entries(c.votes)) votes[pid] = v.index;
+  return {
+    id: c.id,
+    status: c.status,
+    hintsUsed: { ...c.hints },
+    fiftyEliminated: [...c.fiftyEliminated],
+    audience: c.audience,
+    friend: c.friend,
+    answeredIds: Object.keys(c.votes),
+    votes,
+    answerIndex: state.phase === 'answering' ? null : c.answerIndex,
+    lastWasCorrect: c.lastWasCorrect,
+    sum: sumOf(data, c),
+    finalLevel: c.finalLevel,
+  };
 }
 
 function buildSnapshot(state: GameState, data: MillionaireRoomData): MillionaireSnapshot {
@@ -124,22 +286,37 @@ function buildSnapshot(state: GameState, data: MillionaireRoomData): Millionaire
   const safe = q
     ? { id: q.id, text: q.text, options: [...q.options] as string[] }
     : null;
-  return {
+  const contestants: Record<string, ContestantView> = {};
+  for (const c of Object.values(data.contestants)) contestants[c.id] = viewOf(data, state, c);
+
+  const primary = data.mode === 'coop' ? data.contestants[COOP_ID] : null;
+  const snap: MillionaireSnapshot = {
+    teamMode: data.mode,
     level: data.level,
-    hintsUsed: { ...data.hints },
-    fiftyEliminated: [...data.fiftyEliminated],
-    audience: data.audience,
-    friend: data.friend,
+    hintsUsed: primary ? { ...primary.hints } : freshHints(),
+    fiftyEliminated: primary ? [...primary.fiftyEliminated] : [],
+    audience: primary?.audience ?? null,
+    friend: primary?.friend ?? null,
     question: safe,
     correctIndex: -1, // never leak the real answer
-    lastAnswerIndex: data.lastAnswerIndex,
-    lastWasCorrect: data.lastWasCorrect,
-    revealCorrectIndex: state.phase === 'results' && q ? q.correctIndex : null,
-    finalSum: data.finalSum,
-    finalLevel: data.finalLevel,
+    lastAnswerIndex: primary ? (state.phase === 'answering' ? null : primary.answerIndex) : null,
+    lastWasCorrect: primary?.lastWasCorrect ?? null,
+    revealCorrectIndex: state.phase !== 'answering' && q ? q.correctIndex : null,
+    finalSum: primary ? sumOf(data, primary) : 0,
+    finalLevel: primary?.finalLevel ?? 0,
     pyramid: [...PRIZE_PYRAMID],
     usedQuestionIds: [...data.used],
+    contestants,
+    playingCount: playing(data).length,
   };
+  if (data.mode === 'ffa') {
+    snap.scores = {};
+    for (const c of Object.values(data.contestants)) snap.scores[c.id] = sumOf(data, c);
+  } else if (data.mode === 'teams') {
+    snap.teamScores = {};
+    for (const c of Object.values(data.contestants)) snap.teamScores[c.id] = sumOf(data, c);
+  }
+  return snap;
 }
 
 function pushState(io: Server, state: GameState, data: MillionaireRoomData): void {
@@ -159,22 +336,53 @@ function pushState(io: Server, state: GameState, data: MillionaireRoomData): voi
 
 // ---------- Game flow ----------
 
+function scheduleBots(io: Server, state: GameState, data: MillionaireRoomData): void {
+  const question = data.currentQuestion;
+  if (!question) return;
+  let bots = Object.values(state.players).filter((p) => p.isBot);
+  // coop: a single bot answering for the party is enough (first answer decides)
+  if (data.mode === 'coop' && bots.length > 0) bots = [bots[Math.floor(Math.random() * bots.length)]];
+  for (const bot of bots) {
+    const delay = 4000 + Math.random() * 18000;
+    const t = setTimeout(() => {
+      if (rooms.get(state.roomCode) !== data) return;
+      if (data.resolved || state.phase !== 'answering') return;
+      if (data.currentQuestion?.id !== question.id) return;
+      const c = contestantOf(data, state, bot.id);
+      if (!c || c.status !== 'playing' || c.decided) return;
+      const correct = question.correctIndex;
+      const allowed = [0, 1, 2, 3].filter((i) => !c.fiftyEliminated.includes(i));
+      const wrong = allowed.filter((i) => i !== correct);
+      const ans = Math.random() < 0.7 || wrong.length === 0
+        ? correct
+        : wrong[Math.floor(Math.random() * wrong.length)];
+      submitAnswer(io, state, bot.id, ans);
+    }, delay);
+    data.botTimeouts.push(t);
+  }
+}
+
 function startQuestion(io: Server, state: GameState): void {
-  const data = getOrInitRoom(state.roomCode);
+  const data = rooms.get(state.roomCode);
+  if (!data) return;
   const difficulty = difficultyForLevel(data.level);
   const question = pickQuestion(data.pool, difficulty, data.used);
   if (!question) {
-    // No questions left — give them what they have
-    finishGame(io, state, false);
+    // No questions left — everybody keeps what they have
+    finishGame(io, state);
     return;
   }
   data.currentQuestion = question;
-  data.fiftyEliminated = [];
-  data.audience = null;
-  data.friend = null;
-  data.lastAnswerIndex = null;
-  data.lastWasCorrect = null;
   data.resolved = false;
+  for (const c of Object.values(data.contestants)) {
+    c.fiftyEliminated = [];
+    c.audience = null;
+    c.friend = null;
+    c.votes = {};
+    c.answerIndex = null;
+    c.decided = c.status !== 'playing';
+    c.lastWasCorrect = null;
+  }
 
   state.phase = 'answering';
   state.timer = ROUND_TIME_SEC;
@@ -199,39 +407,49 @@ function startQuestion(io: Server, state: GameState): void {
     io.to(state.roomCode).emit('timer-tick', remaining);
     if (remaining <= 0) {
       if (data.timer) { clearInterval(data.timer); data.timer = null; }
-      // Out of time — count as wrong
-      if (!data.resolved) {
-        resolveAnswer(io, state, null);
-      }
+      // Out of time — undecided contestants get whatever votes they have (teams) or nothing
+      if (!data.resolved) resolveRound(io, state);
     }
   }, 1000);
 
-  // Schedule a bot answer (any bot might press first; one is enough)
-  const bots = Object.values(state.players).filter(p => p.isBot);
-  if (bots.length > 0) {
-    const bot = bots[Math.floor(Math.random() * bots.length)];
-    const delay = 4000 + Math.random() * 18000;
-    setTimeout(() => {
-      if (data.resolved) return;
-      if (state.phase !== 'answering') return;
-      // 70% chance the bot is correct
-      const correct = question.correctIndex;
-      const allowed = [0, 1, 2, 3].filter(i => !data.fiftyEliminated.includes(i));
-      const wrong = allowed.filter(i => i !== correct);
-      const ans = Math.random() < 0.7 || wrong.length === 0
-        ? correct
-        : wrong[Math.floor(Math.random() * wrong.length)];
-      resolveAnswer(io, state, ans, bot.id);
-    }, delay);
+  scheduleBots(io, state, data);
+}
+
+/** A player picks an option. Decides the contestant's answer according to the format. */
+function submitAnswer(io: Server, state: GameState, playerId: string, answerIndex: number): void {
+  const data = rooms.get(state.roomCode);
+  if (!data || data.resolved || !data.currentQuestion) return;
+  if (state.phase !== 'answering') return;
+  const c = contestantOf(data, state, playerId);
+  if (!c || c.status !== 'playing' || c.decided) return;
+  if (c.fiftyEliminated.includes(answerIndex)) return;
+  if (c.votes[playerId]) return; // already voted
+
+  c.votes[playerId] = { index: answerIndex, at: Date.now() };
+  const player = state.players[playerId];
+  if (player) player.answerTime = Date.now();
+
+  if (data.mode === 'teams') {
+    const members = membersOf(data, state, c);
+    const allVoted = members.every((id) => c.votes[id]);
+    if (allVoted) {
+      c.answerIndex = majorityVote(c.votes);
+      c.decided = true;
+    }
+  } else {
+    // ffa: own answer; coop: the first answer is the party's answer
+    c.answerIndex = answerIndex;
+    c.decided = true;
+  }
+
+  if (playing(data).every((x) => x.decided)) {
+    resolveRound(io, state);
+  } else {
+    pushState(io, state, data);
   }
 }
 
-function resolveAnswer(
-  io: Server,
-  state: GameState,
-  answerIndex: number | null,
-  byPlayerId?: string,
-): void {
+function resolveRound(io: Server, state: GameState): void {
   const data = rooms.get(state.roomCode);
   if (!data || data.resolved) return;
   if (!data.currentQuestion) return;
@@ -239,13 +457,20 @@ function resolveAnswer(
   clearTimers(data);
 
   const q = data.currentQuestion;
-  const isCorrect = answerIndex !== null && answerIndex === q.correctIndex;
-  data.lastAnswerIndex = answerIndex;
-  data.lastWasCorrect = isCorrect;
-
-  // Mark the answering player's currentAnswer for UI
-  if (byPlayerId && state.players[byPlayerId]) {
-    state.players[byPlayerId].currentAnswer = answerIndex;
+  for (const c of playing(data)) {
+    if (!c.decided) {
+      // Timer ran out: teams take the majority of partial votes, others have nothing
+      c.answerIndex = data.mode === 'teams' ? majorityVote(c.votes) : null;
+      c.decided = true;
+    }
+    c.lastWasCorrect = c.answerIndex !== null && c.answerIndex === q.correctIndex;
+    // Mark members' currentAnswer for UI (presenter "Ответил: …")
+    for (const pid of membersOf(data, state, c)) {
+      const p = state.players[pid];
+      if (!p) continue;
+      const v = c.votes[pid];
+      p.currentAnswer = v ? v.index : (data.mode === 'coop' ? null : c.answerIndex);
+    }
   }
 
   state.phase = 'results';
@@ -253,56 +478,76 @@ function resolveAnswer(
 
   // After ~3.5s show result, then advance
   data.resolveTimeout = setTimeout(() => {
-    if (!isCorrect) {
-      // Drop to nearest safe haven below the reached level.
-      // Safe havens (issue 1.1):
-      //   reachedLevel >= 10 -> PRIZE_PYRAMID[reachedLevel-1] (or last guaranteed above)
-      //   reachedLevel >= 5  -> 25 000
-      //   reachedLevel >= 1  -> 1 000  (first guaranteed)
-      //   else               -> 0
-      const reachedLevel = data.level - 1; // last cleared level
-      let prize = 0;
-      if (reachedLevel >= 10) {
-        // Above the third safe haven — give the last cleared level prize (or pyramid cap).
-        const idx = Math.min(reachedLevel - 1, PRIZE_PYRAMID.length - 1);
-        prize = idx >= 0 ? PRIZE_PYRAMID[idx] : 0;
-      } else if (reachedLevel >= 5) {
-        prize = 25_000;
-      } else if (reachedLevel >= 1) {
-        prize = 1_000;
-      } else {
-        prize = 0;
+    data.resolveTimeout = null;
+    const isLast = data.level >= PRIZE_PYRAMID.length;
+    let anyoneWon = false;
+    for (const c of playing(data)) {
+      if (!c.lastWasCorrect) {
+        // Drop to the nearest safe haven below the reached level.
+        const reachedLevel = data.level - 1; // last cleared level
+        c.status = 'out';
+        c.finalSum = safeSum(reachedLevel);
+        c.finalLevel = reachedLevel;
+      } else if (isLast) {
+        c.status = 'won';
+        c.finalSum = PRIZE_PYRAMID[PRIZE_PYRAMID.length - 1];
+        c.finalLevel = PRIZE_PYRAMID.length;
+        anyoneWon = true;
       }
-      data.finalSum = prize;
-      data.finalLevel = reachedLevel;
-      finishGame(io, state, false);
+    }
+
+    if (anyoneWon || playing(data).length === 0) {
+      finishGame(io, state);
       return;
     }
 
-    // Correct — check if they just won the million
-    if (data.level >= PRIZE_PYRAMID.length) {
-      data.finalSum = PRIZE_PYRAMID[PRIZE_PYRAMID.length - 1];
-      data.finalLevel = PRIZE_PYRAMID.length;
-      finishGame(io, state, true);
-      return;
-    }
-
-    // Otherwise, climb the pyramid
+    // Otherwise, the survivors climb the pyramid
     data.level++;
     startQuestion(io, state);
   }, 3500);
 }
 
-function finishGame(io: Server, state: GameState, victory: boolean): void {
-  const data = getOrInitRoom(state.roomCode);
+function finishGame(io: Server, state: GameState): void {
+  const data = rooms.get(state.roomCode);
+  if (!data) return;
   clearTimers(data);
+
+  // Contestants still playing (questions ran out) keep the prize of the last cleared level
+  for (const c of playing(data)) {
+    c.finalSum = sumOf(data, c);
+    c.finalLevel = data.level - 1;
+  }
+
+  const stats: Record<string, unknown> = { teamMode: data.mode };
+  let victory: boolean;
+  if (data.mode === 'coop') {
+    const c = data.contestants[COOP_ID];
+    victory = c.status === 'won';
+    stats.sum = c.finalSum;
+    stats.level = c.finalLevel;
+  } else {
+    const scores: Record<string, number> = {};
+    let winnerId: string | undefined;
+    let best = -1;
+    for (const c of Object.values(data.contestants)) {
+      scores[c.id] = c.finalSum;
+      if (c.finalSum > best) { best = c.finalSum; winnerId = c.id; }
+    }
+    victory = best > 0;
+    if (data.mode === 'ffa') {
+      stats.scores = scores;
+      stats.winnerPlayerId = winnerId;
+    } else {
+      stats.teamScores = scores;
+      stats.winnerTeamId = winnerId;
+    }
+    stats.sum = best;
+    stats.level = winnerId ? data.contestants[winnerId].finalLevel : 0;
+  }
+
   state.phase = victory ? 'victory' : 'defeat';
   pushState(io, state, data);
-
-  io.to(state.roomCode).emit('game-over', victory, {
-    sum: data.finalSum,
-    level: data.finalLevel,
-  });
+  io.to(state.roomCode).emit('game-over', victory, stats);
 
   // Cleanup
   rooms.delete(state.roomCode);
@@ -310,40 +555,46 @@ function finishGame(io: Server, state: GameState, victory: boolean): void {
 
 // ---------- Hint handlers ----------
 
-function applyFifty(io: Server, state: GameState): void {
+/** Contestant the hint applies to, if it may still use hints this round. */
+function hintTarget(state: GameState, playerId: string): { data: MillionaireRoomData; c: Contestant } | null {
   const data = rooms.get(state.roomCode);
-  if (!data) return;
-  // Atomic guard (issue 1.2): claim the hint flag BEFORE any side-effects so
-  // two concurrent socket events can't both pass the check.
-  if (data.hints.fifty) return;
-  data.hints.fifty = true;
-  if (!data.currentQuestion) return;
+  if (!data || !data.currentQuestion || data.resolved) return null;
+  const c = contestantOf(data, state, playerId);
+  if (!c || c.status !== 'playing' || c.decided) return null;
+  return { data, c };
+}
 
-  const correct = data.currentQuestion.correctIndex;
-  const wrongs = [0, 1, 2, 3].filter(i => i !== correct);
-  // Pick 2 wrong options to remove
+function applyFifty(io: Server, state: GameState, playerId: string): void {
+  const t = hintTarget(state, playerId);
+  if (!t) return;
+  const { data, c } = t;
+  // Atomic guard: claim the hint flag BEFORE any side-effects so two
+  // concurrent socket events can't both pass the check.
+  if (c.hints.fifty) return;
+  c.hints.fifty = true;
+
+  const correct = data.currentQuestion!.correctIndex;
+  const wrongs = [0, 1, 2, 3].filter((i) => i !== correct);
   const shuffled = wrongs.sort(() => Math.random() - 0.5);
-  data.fiftyEliminated = [shuffled[0], shuffled[1]];
+  c.fiftyEliminated = [shuffled[0], shuffled[1]];
 
   pushState(io, state, data);
 }
 
-function applyAudience(io: Server, state: GameState): void {
-  const data = rooms.get(state.roomCode);
-  if (!data) return;
-  // Atomic guard (issue 1.2): claim the hint flag BEFORE any side-effects.
-  if (data.hints.audience) return;
-  data.hints.audience = true;
-  if (!data.currentQuestion) return;
+function applyAudience(io: Server, state: GameState, playerId: string): void {
+  const t = hintTarget(state, playerId);
+  if (!t) return;
+  const { data, c } = t;
+  if (c.hints.audience) return;
+  c.hints.audience = true;
 
-  const correct = data.currentQuestion.correctIndex;
+  const correct = data.currentQuestion!.correctIndex;
   // 60-80% to correct, rest distributed among remaining (taking 50/50 elimination into account)
   const correctPct = 60 + Math.floor(Math.random() * 21); // 60..80
   const remaining = 100 - correctPct;
-  const others = [0, 1, 2, 3].filter(i => i !== correct && !data.fiftyEliminated.includes(i));
+  const others = [0, 1, 2, 3].filter((i) => i !== correct && !c.fiftyEliminated.includes(i));
   const percents: [number, number, number, number] = [0, 0, 0, 0];
   percents[correct] = correctPct;
-  // Distribute remaining randomly among others
   if (others.length > 0) {
     const splits: number[] = [];
     let acc = 0;
@@ -357,28 +608,26 @@ function applyAudience(io: Server, state: GameState): void {
       percents[idx] = splits[i];
     });
   }
-  // Eliminated indices stay 0
-  data.audience = { percents };
+  c.audience = { percents };
 
   pushState(io, state, data);
 }
 
-function applyFriend(io: Server, state: GameState): void {
-  const data = rooms.get(state.roomCode);
-  if (!data) return;
-  // Atomic guard (issue 1.2): claim the hint flag BEFORE any side-effects.
-  if (data.hints.friend) return;
-  data.hints.friend = true;
-  if (!data.currentQuestion) return;
+function applyFriend(io: Server, state: GameState, playerId: string): void {
+  const t = hintTarget(state, playerId);
+  if (!t) return;
+  const { data, c } = t;
+  if (c.hints.friend) return;
+  c.hints.friend = true;
 
-  const correct = data.currentQuestion.correctIndex;
-  const allowed = [0, 1, 2, 3].filter(i => !data.fiftyEliminated.includes(i));
+  const correct = data.currentQuestion!.correctIndex;
+  const allowed = [0, 1, 2, 3].filter((i) => !c.fiftyEliminated.includes(i));
   // 70% correct, 30% random (from allowed)
   let suggestion: number;
   if (Math.random() < 0.7) {
     suggestion = correct;
   } else {
-    const wrong = allowed.filter(i => i !== correct);
+    const wrong = allowed.filter((i) => i !== correct);
     suggestion = wrong.length > 0
       ? wrong[Math.floor(Math.random() * wrong.length)]
       : correct;
@@ -390,7 +639,7 @@ function applyFriend(io: Server, state: GameState): void {
     'Звучит точно как',
   ];
   const text = `${phrases[Math.floor(Math.random() * phrases.length)]} ${String.fromCharCode(65 + suggestion)}.`;
-  data.friend = {
+  c.friend = {
     suggestionIndex: suggestion as 0 | 1 | 2 | 3,
     text,
   };
@@ -398,72 +647,60 @@ function applyFriend(io: Server, state: GameState): void {
   pushState(io, state, data);
 }
 
-function applySwap(io: Server, state: GameState): void {
-  const data = rooms.get(state.roomCode);
-  if (!data) return;
-  // Atomic guard (issue 1.2/1.3): claim the hint flag BEFORE any side-effects.
-  if (data.hints.swap) return;
-  data.hints.swap = true;
-  if (!data.currentQuestion) return;
-  if (data.resolved) return;
+/** Swap the question — coop only (in ffa/teams everybody shares one question). */
+function applySwap(io: Server, state: GameState, playerId: string): void {
+  const t = hintTarget(state, playerId);
+  if (!t) return;
+  const { data, c } = t;
+  if (data.mode !== 'coop') return;
+  if (c.hints.swap) return;
+  c.hints.swap = true;
 
-  // Pick a new question of the same difficulty (excluding current and used).
-  const difficulty = data.currentQuestion.difficulty;
-  const oldId = data.currentQuestion.id;
+  const current = data.currentQuestion!;
+  const difficulty = current.difficulty;
   // Make sure the previous question is marked used so we don't roll the same.
-  data.used.add(oldId);
+  data.used.add(current.id);
   const replacement = pickQuestion(data.pool, difficulty, data.used);
   if (!replacement) return; // no replacement available — keep current
 
   data.currentQuestion = replacement;
-  // Reset hint visuals tied to the previous question (50/50 indices, audience,
-  // friend) so they don't leak info about the new one.
-  data.fiftyEliminated = [];
-  data.audience = null;
-  data.friend = null;
-  // Reset per-question answer markers so the bot can re-answer.
-  data.lastAnswerIndex = null;
-  data.lastWasCorrect = null;
+  // Reset hint visuals tied to the previous question so they don't leak info about the new one.
+  c.fiftyEliminated = [];
+  c.audience = null;
+  c.friend = null;
+  c.votes = {};
+  c.answerIndex = null;
+  c.decided = false;
+  c.lastWasCorrect = null;
   for (const p of Object.values(state.players)) {
     p.currentAnswer = null;
     p.answerTime = null;
   }
 
-  // Reschedule a bot answer for the new question.
-  const bots = Object.values(state.players).filter(p => p.isBot);
-  if (bots.length > 0 && state.phase === 'answering') {
-    const bot = bots[Math.floor(Math.random() * bots.length)];
-    const newQ = replacement;
-    const delay = 4000 + Math.random() * 14000;
-    setTimeout(() => {
-      const cur = rooms.get(state.roomCode);
-      if (!cur || cur.resolved) return;
-      if (cur.currentQuestion?.id !== newQ.id) return;
-      if (state.phase !== 'answering') return;
-      const correct = newQ.correctIndex;
-      const allowed = [0, 1, 2, 3].filter(i => !cur.fiftyEliminated.includes(i));
-      const wrong = allowed.filter(i => i !== correct);
-      const ans = Math.random() < 0.7 || wrong.length === 0
-        ? correct
-        : wrong[Math.floor(Math.random() * wrong.length)];
-      resolveAnswer(io, state, ans, bot.id);
-    }, delay);
-  }
+  // Reschedule bot answers for the new question.
+  for (const bt of data.botTimeouts) clearTimeout(bt);
+  data.botTimeouts = [];
+  scheduleBots(io, state, data);
 
   pushState(io, state, data);
+}
+
+type HintName = 'fifty' | 'audience' | 'friend' | 'swap';
+
+function applyHint(io: Server, state: GameState, playerId: string, hint: HintName): void {
+  if (hint === 'fifty') applyFifty(io, state, playerId);
+  else if (hint === 'audience') applyAudience(io, state, playerId);
+  else if (hint === 'friend') applyFriend(io, state, playerId);
+  else if (hint === 'swap') applySwap(io, state, playerId);
 }
 
 // ---------- ModeHandler ----------
 
 const handler: ModeHandler = {
   start(io, state) {
-    rooms.delete(state.roomCode);
-    const data = getOrInitRoom(state.roomCode);
-    data.level = 1;
-    data.hints = { fifty: false, audience: false, friend: false, swap: false };
-    data.finalSum = 0;
-    data.finalLevel = 0;
-    data.used = new Set();
+    const old = rooms.get(state.roomCode);
+    if (old) clearTimers(old);
+    const data = initRoom(state);
     data.pool = toMillionaireQuestions(getSimpleData('millionaire', state.contentPacks?.millionaire).questions);
 
     state.phase = 'answering';
@@ -481,44 +718,25 @@ const handler: ModeHandler = {
       if (state.gameMode !== 'millionaire') return;
       if (state.phase !== 'answering') return;
       if (typeof answerIndex !== 'number' || answerIndex < 0 || answerIndex > 3) return;
-      const data = rooms.get(state.roomCode);
-      if (!data) return;
-      if (data.fiftyEliminated.includes(answerIndex)) return;
-      resolveAnswer(io, state, answerIndex, socket.id);
+      submitAnswer(io, state, socket.id, answerIndex);
     });
 
-    socket.on('mode-millionaire-hint', (hint: 'fifty' | 'audience' | 'friend' | 'swap') => {
+    socket.on('mode-millionaire-hint', (hint: HintName) => {
       const state = getState();
       if (!state) return;
       if (state.gameMode !== 'millionaire') return;
       if (state.phase !== 'answering') return;
-      if (hint === 'fifty') applyFifty(io, state);
-      else if (hint === 'audience') applyAudience(io, state);
-      else if (hint === 'friend') applyFriend(io, state);
-      else if (hint === 'swap') applySwap(io, state);
+      applyHint(io, state, socket.id, hint);
     });
 
-    // Dedicated event names — also serve as atomic-claim entry points (issue 1.2/1.3).
-    socket.on('mode-millionaire-hint-fifty', () => {
-      const state = getState();
-      if (!state || state.gameMode !== 'millionaire' || state.phase !== 'answering') return;
-      applyFifty(io, state);
-    });
-    socket.on('mode-millionaire-hint-audience', () => {
-      const state = getState();
-      if (!state || state.gameMode !== 'millionaire' || state.phase !== 'answering') return;
-      applyAudience(io, state);
-    });
-    socket.on('mode-millionaire-hint-friend', () => {
-      const state = getState();
-      if (!state || state.gameMode !== 'millionaire' || state.phase !== 'answering') return;
-      applyFriend(io, state);
-    });
-    socket.on('mode-millionaire-hint-swap', () => {
-      const state = getState();
-      if (!state || state.gameMode !== 'millionaire' || state.phase !== 'answering') return;
-      applySwap(io, state);
-    });
+    // Dedicated event names — also serve as atomic-claim entry points.
+    for (const hint of ['fifty', 'audience', 'friend', 'swap'] as HintName[]) {
+      socket.on(`mode-millionaire-hint-${hint}`, () => {
+        const state = getState();
+        if (!state || state.gameMode !== 'millionaire' || state.phase !== 'answering') return;
+        applyHint(io, state, socket.id, hint);
+      });
+    }
   },
 
   // Screen (TV) joined mid-game: state.millionaire is mirrored by pushState.

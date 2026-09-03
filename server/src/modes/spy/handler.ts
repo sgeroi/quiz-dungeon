@@ -13,11 +13,30 @@ const VOTE_TIME = 15;
 // Game-over reveal window: the spy's identity is shown (TV + phones) before
 // the room flips to the generic victory/defeat screens.
 const REVEAL_TIME = 8;
+// Personal scoring (see docs/TEAMS.md, ffa): every team player who voted for
+// the spy in the decisive vote gets this bonus on top of their answer points.
+const CATCH_BONUS = 2;
+
+/** Formats supported by this mode: 'coop' (team vs spy) and 'ffa' (personal ranking). */
+type SpyTeamMode = 'ffa' | 'coop';
 
 interface SpyState {
+  teamMode: SpyTeamMode;
   spyId: string | undefined;
   teamScore: number;
   spyScore: number;
+  /**
+   * Personal scores (both formats, shown as the ranking in ffa):
+   * team player: +1 per correct answer, +CATCH_BONUS for voting out the spy;
+   * spy: +1 for every team player who answered wrong (or didn't answer).
+   */
+  scores: Record<string, number>;
+  /**
+   * Spy's "cover" score = how many questions the spy personally answered right.
+   * Shown publicly INSTEAD of the real spy score until the reveal, otherwise
+   * the ranking would give the spy away (their points don't follow their answers).
+   */
+  spyCover: number;
   round: number;
   totalRounds: number;
   phase: 'role-reveal' | 'question' | 'results' | 'voting' | 'finished';
@@ -51,10 +70,36 @@ function publicQuestion(q: SpyQuestion) {
   };
 }
 
+/**
+ * Scores safe to broadcast. Before the reveal the spy's entry is replaced by
+ * their cover score (own correct answers) so the public ranking looks like
+ * everyone is scoring the same way.
+ */
+function publicScores(s: SpyState, reveal = s.phase === 'finished'): Record<string, number> {
+  const out = { ...s.scores };
+  if (!reveal && s.spyId && s.spyId in out) out[s.spyId] = s.spyCover;
+  return out;
+}
+
+/** Ranking: score desc, still-in-game players first on ties, then join order. */
+function ranking(state: GameState, s: SpyState): string[] {
+  const order = Object.keys(state.players);
+  return order.slice().sort((a, b) => {
+    const d = (s.scores[b] ?? 0) - (s.scores[a] ?? 0);
+    if (d !== 0) return d;
+    const ea = s.eliminated[a] ? 1 : 0;
+    const eb = s.eliminated[b] ? 1 : 0;
+    if (ea !== eb) return ea - eb;
+    return order.indexOf(a) - order.indexOf(b);
+  });
+}
+
 function publicSpyState(s: SpyState) {
   return {
+    teamMode: s.teamMode,
     teamScore: s.teamScore,
     spyScore: s.spyScore,
+    scores: publicScores(s),
     round: s.round,
     totalRounds: s.totalRounds,
     phase: s.phase,
@@ -64,11 +109,35 @@ function publicSpyState(s: SpyState) {
   };
 }
 
+/** Mirror of the public snapshot on gameState (read by ResultScreen fallbacks). */
+function syncSnapshot(state: GameState, s: SpyState) {
+  (state as any).spy = {
+    teamMode: s.teamMode,
+    teamScore: s.teamScore,
+    spyScore: s.spyScore,
+    round: s.round,
+    totalRounds: s.totalRounds,
+    phase: s.phase,
+    ...(s.teamMode === 'ffa' ? { scores: publicScores(s) } : {}),
+  };
+}
+
 function broadcastState(io: Server, state: GameState) {
   const s = getSpyState(state);
   if (!s) return;
+  syncSnapshot(state, s);
   io.to(state.roomCode).emit('game-state', state);
   io.to(state.roomCode).emit('mode-spy-state' as any, publicSpyState(s));
+}
+
+/** Private score update for the spy (their real points are hidden from the room). */
+function sendSpyPrivate(io: Server, s: SpyState, gained: number) {
+  if (!s.spyId) return;
+  io.to(s.spyId).emit('mode-spy-private' as any, {
+    score: s.scores[s.spyId] ?? 0,
+    cover: s.spyCover,
+    gained,
+  });
 }
 
 function startQuestion(io: Server, state: GameState) {
@@ -198,7 +267,19 @@ function finishQuestion(io: Server, state: GameState) {
   let correctTeam = 0;
   let totalTeam = teamIds.length;
   for (const id of teamIds) {
-    if (s.answers[id] === q.correctIndex) correctTeam++;
+    if (s.answers[id] === q.correctIndex) {
+      correctTeam++;
+      s.scores[id] = (s.scores[id] ?? 0) + 1;
+    }
+  }
+  // Personal scoring for the spy: a point per team mistake; the cover score
+  // follows the spy's own answers so the public ranking doesn't expose them.
+  const wrongTeam = totalTeam - correctTeam;
+  let spyGained = 0;
+  if (s.spyId && !s.eliminated[s.spyId]) {
+    spyGained = wrongTeam;
+    s.scores[s.spyId] = (s.scores[s.spyId] ?? 0) + spyGained;
+    if (s.answers[s.spyId] === q.correctIndex) s.spyCover++;
   }
 
   let winner: 'team' | 'spy' | 'tie';
@@ -231,7 +312,12 @@ function finishQuestion(io: Server, state: GameState) {
     teamScore: s.teamScore,
     spyScore: s.spyScore,
     winner,
+    teamMode: s.teamMode,
+    scores: publicScores(s),
+    correctCount: correctTeam,
+    teamCount: totalTeam,
   });
+  sendSpyPrivate(io, s, spyGained);
   broadcastState(io, state);
 
   startTimer(
@@ -371,7 +457,15 @@ function finishVoting(io: Server, state: GameState) {
   // - After eliminating, if the spy is the only one left -> spy wins.
   if (topId && topVotes > 0) {
     if (topId === s.spyId) {
-      finishGame(io, state, true, 'spy-voted-out', { tally, lastEliminated: topId });
+      // Personal scoring: everyone who pointed at the spy in the decisive vote
+      // gets the catch bonus.
+      const catchers: string[] = [];
+      for (const [voter, target] of Object.entries(s.votes)) {
+        if (s.eliminated[voter] || target !== s.spyId || voter === s.spyId) continue;
+        s.scores[voter] = (s.scores[voter] ?? 0) + CATCH_BONUS;
+        catchers.push(voter);
+      }
+      finishGame(io, state, true, 'spy-voted-out', { tally, lastEliminated: topId, catchers });
       return;
     }
     // Wrong guess -> eliminate them and continue.
@@ -425,7 +519,7 @@ function finishGame(
   state: GameState,
   teamWon: boolean,
   reason: 'spy-voted-out' | 'spy-eliminated' | 'team-eliminated' | 'rounds-exhausted',
-  extra?: { tally?: Record<string, number>; lastEliminated?: string },
+  extra?: { tally?: Record<string, number>; lastEliminated?: string; catchers?: string[] },
 ) {
   const s = getSpyState(state);
   if (!s) return;
@@ -434,13 +528,24 @@ function finishGame(
 
   const spyName = s.spyId ? state.players[s.spyId]?.name : 'неизвестно';
 
+  // Real (revealed) personal scores and the ffa winner.
+  const scores = publicScores(s, true);
+  const order = ranking(state, s);
+  const winnerPlayerId = s.teamMode === 'ffa' ? order[0] : undefined;
+
   const gameOver = {
+    teamMode: s.teamMode,
     teamWon,
     reason,
     spyId: s.spyId,
     spyName,
     teamScore: s.teamScore,
     spyScore: s.spyScore,
+    scores,
+    ranking: order,
+    winnerPlayerId,
+    catchers: extra?.catchers ?? [],
+    catchBonus: CATCH_BONUS,
     votes: s.votes,
     tally: extra?.tally ?? {},
     history: s.history,
@@ -464,12 +569,15 @@ function finishGame(
     state.timer = 0;
     io.to(state.roomCode).emit('game-over', teamWon, {
       mode: 'spy',
+      teamMode: s.teamMode,
       teamWon,
       reason,
       spyId: s.spyId,
       spyName,
       teamScore: s.teamScore,
       spyScore: s.spyScore,
+      scores,
+      ...(winnerPlayerId ? { winnerPlayerId } : {}),
       votes: s.votes,
       tally: extra?.tally ?? {},
     });
@@ -491,22 +599,30 @@ const handler: ModeHandler = {
   start(io, state) {
     clearTimer(state.roomCode);
 
+    // 'teams' is not offered for this mode (docs/TEAMS.md); anything else is coop.
+    const teamMode: SpyTeamMode = state.teamMode === 'ffa' ? 'ffa' : 'coop';
+
     // Pick spy from human players (fall back to all if no humans).
     const humans = Object.values(state.players).filter(p => !p.isBot);
     const candidates = humans.length > 0 ? humans : Object.values(state.players);
     const spy = candidates.length > 0 ? candidates[Math.floor(Math.random() * candidates.length)] : undefined;
     const spyId = spy?.id;
     state.spyId = spyId;
-    (state as any).spy = { teamScore: 0, spyScore: 0, spyId, votes: {} };
 
     const pool = toSpyQuestions(getSimpleData('spy', state.contentPacks?.spy).questions);
     const questions = pickSpyQuestions(pool, TOTAL_ROUNDS);
     const totalRounds = Math.max(1, Math.min(TOTAL_ROUNDS, questions.length));
 
+    const scores: Record<string, number> = {};
+    for (const p of Object.values(state.players)) scores[p.id] = 0;
+
     const spyState: SpyState = {
+      teamMode,
       spyId,
       teamScore: 0,
       spyScore: 0,
+      scores,
+      spyCover: 0,
       round: 0,
       totalRounds,
       phase: 'role-reveal',
@@ -518,6 +634,7 @@ const handler: ModeHandler = {
       eliminated: {},
     };
     SPY_STATES.set(state.roomCode, spyState);
+    syncSnapshot(state, spyState);
 
     // Notify roles privately.
     for (const p of Object.values(state.players)) {

@@ -12,6 +12,9 @@ const botMark = (p?: Pick<Player, 'isBot' | 'name'> | null) => (p?.isBot && !p.n
  * Subscribes to the same room-broadcast events as SpyScreen, minus the personal
  * ones (role, answer leak). The spy's identity is NEVER shown before the
  * 'mode-spy-game-over' event — gameState.spyId is deliberately ignored.
+ *
+ * Formats: 'coop' — team vs spy scoreboard; 'ffa' — personal ranking (the
+ * server masks the spy's real points with a cover score until the reveal).
  */
 
 interface SpyQuestionPayload {
@@ -28,6 +31,10 @@ interface SpyResultsPayload {
   teamScore: number;
   spyScore: number;
   winner: 'team' | 'spy' | 'tie';
+  teamMode?: 'ffa' | 'coop';
+  scores?: Record<string, number>;
+  correctCount?: number;
+  teamCount?: number;
 }
 
 interface SpyVotingPayload {
@@ -48,20 +55,28 @@ interface SpyEliminationPayload {
 }
 
 interface SpyGameOverPayload {
+  teamMode?: 'ffa' | 'coop';
   teamWon: boolean;
   reason?: 'spy-voted-out' | 'spy-eliminated' | 'team-eliminated' | 'rounds-exhausted';
   spyId?: string;
   spyName?: string;
   teamScore: number;
   spyScore: number;
+  scores?: Record<string, number>;
+  ranking?: string[];
+  winnerPlayerId?: string;
+  catchers?: string[];
+  catchBonus?: number;
   votes: Record<string, string | null>;
   tally: Record<string, number>;
   eliminated?: Record<string, boolean>;
 }
 
 interface SpyStatePayload {
+  teamMode?: 'ffa' | 'coop';
   teamScore: number;
   spyScore: number;
+  scores?: Record<string, number>;
   round: number;
   totalRounds: number;
   phase: 'role-reveal' | 'question' | 'results' | 'voting' | 'finished';
@@ -73,6 +88,7 @@ interface SpyStatePayload {
 type View = 'intro' | 'question' | 'results' | 'voting' | 'elimination' | 'finished';
 
 const LETTERS = ['A', 'B', 'C', 'D'];
+const MEDALS = ['🥇', '🥈', '🥉'];
 
 const REASON_TEXT: Record<NonNullable<SpyGameOverPayload['reason']>, string> = {
   'spy-voted-out': 'Команда вычислила шпиона голосованием',
@@ -95,6 +111,17 @@ function PlayerChip({ p, tone, suffix }: { p: Player; tone: 'ok' | 'bad' | 'mute
       {botMark(p)}{p.name}{suffix ?? ''}
     </span>
   );
+}
+
+/** Sort player ids by score desc; players still in the game first on ties. */
+function rankIds(players: Player[], scores: Record<string, number>, eliminated: Record<string, boolean>): string[] {
+  return players
+    .map((p) => p.id)
+    .sort((a, b) => {
+      const d = (scores[b] ?? 0) - (scores[a] ?? 0);
+      if (d !== 0) return d;
+      return (eliminated[a] ? 1 : 0) - (eliminated[b] ? 1 : 0);
+    });
 }
 
 export default function SpyPresenter() {
@@ -160,9 +187,12 @@ export default function SpyPresenter() {
             : 'intro'
   );
 
+  const isFfa = (spyState?.teamMode ?? gameState.teamMode) === 'ffa';
   const eliminated = spyState?.eliminated ?? voting?.eliminated ?? {};
   const teamScore = spyState?.teamScore ?? results?.teamScore ?? 0;
   const spyScore = spyState?.spyScore ?? results?.spyScore ?? 0;
+  // Public scores: the spy's entry is the cover score until the reveal.
+  const scores = spyState?.scores ?? results?.scores ?? {};
   const totalRounds = spyState?.totalRounds ?? question?.totalRounds ?? gameState.totalFloors ?? 8;
   const roundNo = question?.round ?? Math.max(1, (spyState?.round ?? 0) + (spyState?.phase === 'question' || spyState?.phase === 'results' ? 1 : 0));
 
@@ -187,30 +217,34 @@ export default function SpyPresenter() {
         <div className="min-w-0">
           <div className="text-[22px] font-bold uppercase tracking-widest text-[var(--color-dungeon-muted)]">{phaseLabel}</div>
           <div className="text-[44px] font-black leading-tight">🕵️ Квиз-мафия</div>
-          <div className="text-[26px] font-bold text-[var(--color-dungeon-gold)]">{roundLabel}</div>
+          <div className="text-[26px] font-bold text-[var(--color-dungeon-gold)]">{roundLabel}{isFfa ? ' · 🥇 личный зачёт' : ''}</div>
         </div>
 
-        {/* Score: team vs spy */}
-        <div className="flex items-center gap-6">
-          <div className="glass-panel px-8 py-3 flex items-center gap-4 border-[var(--color-dungeon-mana)]/40">
-            <span className="text-[44px] leading-none">👥</span>
-            <div>
-              <div className="text-[18px] font-bold uppercase tracking-widest text-[var(--color-dungeon-muted)]">Команда</div>
-              <div className="text-[52px] font-black leading-none text-[var(--color-dungeon-mana)] tabular-nums">{teamScore}</div>
+        {isFfa ? (
+          <RankingBoard players={players} scores={scores} eliminated={eliminated} />
+        ) : (
+          /* Score: team vs spy */
+          <div className="flex items-center gap-6">
+            <div className="glass-panel px-8 py-3 flex items-center gap-4 border-[var(--color-dungeon-mana)]/40">
+              <span className="text-[44px] leading-none">👥</span>
+              <div>
+                <div className="text-[18px] font-bold uppercase tracking-widest text-[var(--color-dungeon-muted)]">Команда</div>
+                <div className="text-[52px] font-black leading-none text-[var(--color-dungeon-mana)] tabular-nums">{teamScore}</div>
+              </div>
+            </div>
+            <div className="text-[40px] font-black text-white/40">:</div>
+            <div className="glass-panel px-8 py-3 flex items-center gap-4 border-[var(--color-dungeon-purple)]/40">
+              <div className="text-right">
+                <div className="text-[18px] font-bold uppercase tracking-widest text-[var(--color-dungeon-muted)]">Шпион</div>
+                <div className="text-[52px] font-black leading-none text-[var(--color-dungeon-purple)] tabular-nums">{spyScore}</div>
+              </div>
+              <span className="text-[44px] leading-none">🕵️</span>
             </div>
           </div>
-          <div className="text-[40px] font-black text-white/40">:</div>
-          <div className="glass-panel px-8 py-3 flex items-center gap-4 border-[var(--color-dungeon-purple)]/40">
-            <div className="text-right">
-              <div className="text-[18px] font-bold uppercase tracking-widest text-[var(--color-dungeon-muted)]">Шпион</div>
-              <div className="text-[52px] font-black leading-none text-[var(--color-dungeon-purple)] tabular-nums">{spyScore}</div>
-            </div>
-            <span className="text-[44px] leading-none">🕵️</span>
-          </div>
-        </div>
+        )}
 
         {phase === 'finished' ? (
-          <div className="min-w-[160px] text-center text-[64px] leading-none">{gameOver?.teamWon ? '🏆' : '🕵️'}</div>
+          <div className="min-w-[160px] text-center text-[64px] leading-none">{isFfa ? '🥇' : gameOver?.teamWon ? '🏆' : '🕵️'}</div>
         ) : (
           <PresenterTimer timer={gameState.timer} maxTimer={gameState.maxTimer} />
         )}
@@ -223,8 +257,9 @@ export default function SpyPresenter() {
             <div className="text-[110px] leading-none">🕵️</div>
             <div className="text-[64px] font-black text-[var(--color-dungeon-gold)]">Один из вас — шпион</div>
             <div className="text-[30px] font-semibold text-[var(--color-dungeon-muted)] max-w-[1300px] leading-snug">
-              Шпион видит правильный ответ заранее и хочет, чтобы команда ошибалась.
-              После каждого раунда — голосование: угадаете шпиона — победа, ошибётесь — игрок выбывает.
+              {isFfa
+                ? 'Каждый сам за себя: очко за верный ответ, шпион получает очко за каждого ошибившегося. Голосуйте после каждого раунда — угадавшие шпиона получат бонус, ошибётесь — игрок выбывает.'
+                : 'Шпион видит правильный ответ заранее и хочет, чтобы команда ошибалась. После каждого раунда — голосование: угадаете шпиона — победа, ошибётесь — игрок выбывает.'}
             </div>
             <div className="flex flex-wrap justify-center gap-3 mt-4">
               {players.map((p) => <PlayerChip key={p.id} p={p} tone="plain" />)}
@@ -239,11 +274,12 @@ export default function SpyPresenter() {
             results={phase === 'results' ? results : null}
             answered={spyState?.answers ?? {}}
             eliminated={eliminated}
+            isFfa={isFfa}
           />
         )}
 
         {phase === 'voting' && (
-          <VotingView players={players} voting={voting} votes={spyState?.votes ?? {}} eliminated={eliminated} lastElimination={elimination} />
+          <VotingView players={players} voting={voting} votes={spyState?.votes ?? {}} eliminated={eliminated} lastElimination={elimination} scores={isFfa ? scores : null} />
         )}
 
         {phase === 'elimination' && elimination && (
@@ -251,8 +287,34 @@ export default function SpyPresenter() {
         )}
 
         {phase === 'finished' && (
-          <GameOverView players={players} gameOver={gameOver} />
+          <GameOverView players={players} gameOver={gameOver} isFfa={isFfa} />
         )}
+      </div>
+    </div>
+  );
+}
+
+// ---------- ffa: compact ranking in the header ----------
+
+function RankingBoard({ players, scores, eliminated }: { players: Player[]; scores: Record<string, number>; eliminated: Record<string, boolean> }) {
+  const byId = new Map(players.map((p) => [p.id, p]));
+  const order = rankIds(players, scores, eliminated).slice(0, 6);
+  return (
+    <div className="glass-panel px-6 py-3 flex items-center gap-4 min-w-0" data-testid="spy-ranking-board">
+      <div className="text-[18px] font-bold uppercase tracking-widest text-[var(--color-dungeon-muted)] shrink-0">Рейтинг</div>
+      <div className="flex items-center gap-3 flex-wrap">
+        {order.map((id, i) => {
+          const p = byId.get(id);
+          if (!p) return null;
+          const out = !!eliminated[id];
+          return (
+            <div key={id} className={`flex items-center gap-2 rounded-2xl px-4 py-1.5 ${i === 0 ? 'bg-[var(--color-dungeon-gold)]/15 ring-1 ring-[var(--color-dungeon-gold)]/60' : 'bg-white/5'} ${out ? 'opacity-40' : ''}`}>
+              <span className="text-[22px] leading-none">{MEDALS[i] ?? `${i + 1}.`}</span>
+              <span className={`text-[24px] font-extrabold max-w-[220px] truncate ${out ? 'line-through' : ''}`}>{botMark(p)}{p.name}</span>
+              <span className={`text-[30px] font-black tabular-nums ${i === 0 ? 'text-[var(--color-dungeon-gold)]' : 'text-white'}`}>{scores[id] ?? 0}</span>
+            </div>
+          );
+        })}
       </div>
     </div>
   );
@@ -261,13 +323,14 @@ export default function SpyPresenter() {
 // ---------- Question / results ----------
 
 function QuestionView({
-  players, question, results, answered, eliminated,
+  players, question, results, answered, eliminated, isFfa,
 }: {
   players: Player[];
   question: SpyQuestionPayload | null;
   results: SpyResultsPayload | null;
   answered: Record<string, number | null>;
   eliminated: Record<string, boolean>;
+  isFfa: boolean;
 }) {
   if (!question) {
     return (
@@ -329,17 +392,23 @@ function QuestionView({
 
       {/* Round outcome banner */}
       {results && (
-        <div className={`rounded-3xl px-8 py-4 text-center text-[34px] font-black ${
-          results.winner === 'team'
-            ? 'bg-[var(--color-dungeon-mana)]/20 text-[var(--color-dungeon-mana)]'
-            : results.winner === 'spy'
-              ? 'bg-[var(--color-dungeon-purple)]/20 text-[var(--color-dungeon-purple)]'
-              : 'bg-white/10 text-white/80'
-        }`}>
-          {results.winner === 'team' && '👥 Большинство ответило верно — очко команде!'}
-          {results.winner === 'spy' && '🕵️ Большинство ошиблось — очко шпиону'}
-          {results.winner === 'tie' && '⚖️ Ничья в этом раунде'}
-        </div>
+        isFfa ? (
+          <div className="rounded-3xl px-8 py-4 text-center text-[34px] font-black bg-[var(--color-dungeon-gold)]/15 text-[var(--color-dungeon-gold)]">
+            🥇 Верно ответили {results.correctCount ?? 0} из {results.teamCount ?? activePlayers.length} — по очку каждому
+          </div>
+        ) : (
+          <div className={`rounded-3xl px-8 py-4 text-center text-[34px] font-black ${
+            results.winner === 'team'
+              ? 'bg-[var(--color-dungeon-mana)]/20 text-[var(--color-dungeon-mana)]'
+              : results.winner === 'spy'
+                ? 'bg-[var(--color-dungeon-purple)]/20 text-[var(--color-dungeon-purple)]'
+                : 'bg-white/10 text-white/80'
+          }`}>
+            {results.winner === 'team' && '👥 Большинство ответило верно — очко команде!'}
+            {results.winner === 'spy' && '🕵️ Большинство ошиблось — очко шпиону'}
+            {results.winner === 'tie' && '⚖️ Ничья в этом раунде'}
+          </div>
+        )
       )}
 
       {/* Players */}
@@ -365,13 +434,15 @@ function QuestionView({
 // ---------- Voting ----------
 
 function VotingView({
-  players, voting, votes, eliminated, lastElimination,
+  players, voting, votes, eliminated, lastElimination, scores,
 }: {
   players: Player[];
   voting: SpyVotingPayload | null;
   votes: Record<string, boolean>;
   eliminated: Record<string, boolean>;
   lastElimination: SpyEliminationPayload | null;
+  /** ffa: public scores shown under names; null in coop. */
+  scores: Record<string, number> | null;
 }) {
   const eligible = voting?.players ?? players.filter((p) => !eliminated[p.id]).map((p) => ({ id: p.id, name: p.name }));
   const votedCount = eligible.filter((p) => votes[p.id]).length;
@@ -383,7 +454,9 @@ function VotingView({
       <div className="text-center">
         <div className="text-[72px] font-black text-[var(--color-dungeon-gold)] leading-none">🗳️ Кто шпион?</div>
         <div className="text-[28px] font-semibold text-[var(--color-dungeon-muted)] mt-3">
-          Угадаете — победа команды. Ошибётесь — игрок выбывает. Проголосовали {votedCount} из {eligible.length}.
+          {scores
+            ? `Угадаете — игра окончена, проголосовавшие за шпиона получат бонус. Ошибётесь — игрок выбывает. Проголосовали ${votedCount} из ${eligible.length}.`
+            : `Угадаете — победа команды. Ошибётесь — игрок выбывает. Проголосовали ${votedCount} из ${eligible.length}.`}
         </div>
       </div>
 
@@ -395,6 +468,9 @@ function VotingView({
             <div key={e.id} className={`glass-panel px-6 py-5 flex flex-col items-center gap-3 ${voted ? 'border-[var(--color-dungeon-heal)]/50' : ''}`}>
               <div className="text-[56px] leading-none">{p?.isBot ? '🤖' : '🧑'}</div>
               <div className="text-[30px] font-extrabold text-center leading-tight truncate w-full">{e.name}</div>
+              {scores && (
+                <div className="text-[24px] font-black tabular-nums text-[var(--color-dungeon-gold)]">{scores[e.id] ?? 0} очк.</div>
+              )}
               <span className={`rounded-full px-4 py-1 text-[20px] font-extrabold ${voted ? 'bg-[var(--color-dungeon-heal)]/25 text-[var(--color-dungeon-heal)]' : 'bg-white/5 text-white/40'}`}>
                 {voted ? 'проголосовал ✓' : 'думает…'}
               </span>
@@ -482,7 +558,7 @@ function EliminationView({
 
 // ---------- Game over: reveal the spy ----------
 
-function GameOverView({ players, gameOver }: { players: Player[]; gameOver: SpyGameOverPayload | null }) {
+function GameOverView({ players, gameOver, isFfa }: { players: Player[]; gameOver: SpyGameOverPayload | null; isFfa: boolean }) {
   if (!gameOver) {
     return (
       <div className="flex-1 flex items-center justify-center text-[40px] font-bold text-[var(--color-dungeon-muted)] animate-pulse">
@@ -494,16 +570,34 @@ function GameOverView({ players, gameOver }: { players: Player[]; gameOver: SpyG
   const spy = gameOver.spyId ? byId.get(gameOver.spyId) : undefined;
   const tally = Object.entries(gameOver.tally).sort((a, b) => b[1] - a[1]);
   const out = players.filter((p) => gameOver.eliminated?.[p.id]);
+  const ffa = (gameOver.teamMode ?? (isFfa ? 'ffa' : 'coop')) === 'ffa';
+  const finalScores = gameOver.scores ?? {};
+  const order = gameOver.ranking ?? rankIds(players, finalScores, gameOver.eliminated ?? {});
+  const winner = gameOver.winnerPlayerId ? byId.get(gameOver.winnerPlayerId) : undefined;
+  const catchers = new Set(gameOver.catchers ?? []);
 
   return (
     <div className="flex-1 min-h-0 grid grid-cols-[minmax(0,1fr)_560px] gap-8">
       <div className="flex flex-col items-center justify-center gap-6 text-center">
-        <div className={`text-[84px] font-black leading-none ${gameOver.teamWon ? 'text-[var(--color-dungeon-gold)]' : 'text-[var(--color-dungeon-purple)]'}`}>
-          {gameOver.teamWon ? 'Команда победила!' : 'Шпион ускользнул!'}
-        </div>
-        <div className="text-[28px] font-semibold text-[var(--color-dungeon-muted)]">
-          {gameOver.reason ? REASON_TEXT[gameOver.reason] : ''}
-        </div>
+        {ffa ? (
+          <>
+            <div className="text-[84px] font-black leading-none text-[var(--color-dungeon-gold)]">
+              {winner ? `🥇 Победил ${botMark(winner)}${winner.name}` : 'Игра окончена'}
+            </div>
+            <div className="text-[28px] font-semibold text-[var(--color-dungeon-muted)]">
+              {gameOver.reason ? REASON_TEXT[gameOver.reason] : ''}
+            </div>
+          </>
+        ) : (
+          <>
+            <div className={`text-[84px] font-black leading-none ${gameOver.teamWon ? 'text-[var(--color-dungeon-gold)]' : 'text-[var(--color-dungeon-purple)]'}`}>
+              {gameOver.teamWon ? 'Команда победила!' : 'Шпион ускользнул!'}
+            </div>
+            <div className="text-[28px] font-semibold text-[var(--color-dungeon-muted)]">
+              {gameOver.reason ? REASON_TEXT[gameOver.reason] : ''}
+            </div>
+          </>
+        )}
         <div className="rounded-[40px] neon-pink bg-[var(--color-dungeon-surface)]/70 px-16 py-10 mt-4">
           <div className="text-[26px] font-bold uppercase tracking-widest text-[var(--color-dungeon-muted)]">Шпионом был</div>
           <div className="text-[96px] font-black leading-tight text-[var(--color-dungeon-accent)]">
@@ -513,37 +607,80 @@ function GameOverView({ players, gameOver }: { players: Player[]; gameOver: SpyG
       </div>
 
       <div className="glass-panel p-6 flex flex-col gap-5 min-h-0 overflow-hidden">
-        <div>
-          <div className="text-[22px] font-bold uppercase tracking-widest text-[var(--color-dungeon-muted)] mb-3">Последнее голосование</div>
-          {tally.length === 0 ? (
-            <div className="text-[26px] font-semibold text-white/50">Никто не голосовал</div>
-          ) : (
+        {ffa ? (
+          <div data-testid="spy-final-ranking">
+            <div className="text-[22px] font-bold uppercase tracking-widest text-[var(--color-dungeon-muted)] mb-3">Личный зачёт</div>
             <div className="flex flex-col gap-2">
-              {tally.map(([id, count]) => {
+              {order.map((id, i) => {
                 const p = byId.get(id);
                 const isSpy = id === gameOver.spyId;
+                const isWin = id === gameOver.winnerPlayerId;
                 return (
-                  <div key={id} className={`flex items-center justify-between rounded-2xl px-5 py-2 ${isSpy ? 'bg-[var(--color-dungeon-accent)]/20' : 'bg-white/5'}`}>
-                    <span className="text-[26px] font-extrabold truncate">{botMark(p)}{p?.name ?? id}{isSpy ? ' 🕵️' : ''}</span>
-                    <span className="text-[28px] font-black text-[var(--color-dungeon-gold)] tabular-nums">{count}</span>
+                  <div key={id} className={`flex items-center gap-3 rounded-2xl px-5 py-2 ${isWin ? 'bg-[var(--color-dungeon-gold)]/15 ring-1 ring-[var(--color-dungeon-gold)]' : isSpy ? 'bg-[var(--color-dungeon-accent)]/20' : 'bg-white/5'}`}>
+                    <span className="text-[26px] w-10 text-center">{MEDALS[i] ?? `${i + 1}.`}</span>
+                    <span className="flex-1 text-[26px] font-extrabold truncate">
+                      {botMark(p)}{p?.name ?? id}{isSpy ? ' 🕵️' : ''}{gameOver.eliminated?.[id] ? ' 💀' : ''}
+                    </span>
+                    {catchers.has(id) && (
+                      <span className="rounded-full bg-[var(--color-dungeon-heal)]/20 text-[var(--color-dungeon-heal)] px-3 py-0.5 text-[16px] font-extrabold uppercase">+{gameOver.catchBonus ?? 2} за шпиона</span>
+                    )}
+                    <span className={`text-[30px] font-black tabular-nums ${isWin ? 'text-[var(--color-dungeon-gold)]' : 'text-white'}`}>{finalScores[id] ?? 0}</span>
                   </div>
                 );
               })}
             </div>
-          )}
-        </div>
-        <div>
-          <div className="text-[22px] font-bold uppercase tracking-widest text-[var(--color-dungeon-muted)] mb-3">Игроки</div>
-          <div className="flex flex-wrap gap-2">
-            {players.map((p) => (
-              <PlayerChip
-                key={p.id}
-                p={p}
-                tone={p.id === gameOver.spyId ? 'bad' : out.includes(p) ? 'muted' : 'plain'}
-                suffix={p.id === gameOver.spyId ? ' 🕵️' : out.includes(p) ? ' 💀' : ''}
-              />
-            ))}
           </div>
+        ) : (
+          <div>
+            <div className="text-[22px] font-bold uppercase tracking-widest text-[var(--color-dungeon-muted)] mb-3">Последнее голосование</div>
+            {tally.length === 0 ? (
+              <div className="text-[26px] font-semibold text-white/50">Никто не голосовал</div>
+            ) : (
+              <div className="flex flex-col gap-2">
+                {tally.map(([id, count]) => {
+                  const p = byId.get(id);
+                  const isSpy = id === gameOver.spyId;
+                  return (
+                    <div key={id} className={`flex items-center justify-between rounded-2xl px-5 py-2 ${isSpy ? 'bg-[var(--color-dungeon-accent)]/20' : 'bg-white/5'}`}>
+                      <span className="text-[26px] font-extrabold truncate">{botMark(p)}{p?.name ?? id}{isSpy ? ' 🕵️' : ''}</span>
+                      <span className="text-[28px] font-black text-[var(--color-dungeon-gold)] tabular-nums">{count}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+        <div>
+          <div className="text-[22px] font-bold uppercase tracking-widest text-[var(--color-dungeon-muted)] mb-3">{ffa ? 'Последнее голосование' : 'Игроки'}</div>
+          {ffa ? (
+            tally.length === 0 ? (
+              <div className="text-[24px] font-semibold text-white/50">Никто не голосовал</div>
+            ) : (
+              <div className="flex flex-wrap gap-2">
+                {tally.map(([id, count]) => {
+                  const p = byId.get(id);
+                  const isSpy = id === gameOver.spyId;
+                  return (
+                    <span key={id} className={`rounded-full px-4 py-1 text-[22px] font-extrabold ${isSpy ? 'bg-[var(--color-dungeon-accent)]/25 text-white' : 'bg-white/10 text-white'}`}>
+                      {botMark(p)}{p?.name ?? id}{isSpy ? ' 🕵️' : ''} · {count}
+                    </span>
+                  );
+                })}
+              </div>
+            )
+          ) : (
+            <div className="flex flex-wrap gap-2">
+              {players.map((p) => (
+                <PlayerChip
+                  key={p.id}
+                  p={p}
+                  tone={p.id === gameOver.spyId ? 'bad' : out.includes(p) ? 'muted' : 'plain'}
+                  suffix={p.id === gameOver.spyId ? ' 🕵️' : out.includes(p) ? ' 💀' : ''}
+                />
+              ))}
+            </div>
+          )}
         </div>
       </div>
     </div>

@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useStore } from '../../store';
 import { socket } from '../../socket';
+import TeamBadge from '../../components/TeamBadge';
+import type { Team } from '../../types';
 
 interface PublicCell {
   value: number;
@@ -25,11 +27,15 @@ interface JeopardyPublic {
   grid: { topics: string[]; cells: Record<string, PublicCell[]> };
   played: string[];
   captainId: string | null;
+  captainTeamId?: string | null;
   scores: Record<string, number>;
+  /** teams-format only: teamId -> total. */
+  teamScores?: Record<string, number> | null;
   currentCell: OpenCell | null;
   buzzerOpen: boolean;
   currentAnswererId: string | null;
   blockedIds: string[];
+  blockedTeamIds?: string[];
   reveal: Reveal | null;
   message: string | null;
   answerTimeSec: number;
@@ -70,6 +76,24 @@ export default function JeopardyCompScreen() {
       }))
       .sort((a, b) => b.score - a.score);
   }, [j, gameState, myId]);
+
+  const isTeams = gameState?.teamMode === 'teams' && (gameState.teams?.length ?? 0) > 0;
+  const myTeamId = myId ? gameState?.players[myId]?.teamId : undefined;
+  const teamRows = useMemo(() => {
+    if (!isTeams || !j || !gameState) return [];
+    const ts = j.teamScores ?? {};
+    return gameState.teams
+      .map((team) => ({
+        team,
+        score: ts[team.id] ?? 0,
+        isMine: team.id === myTeamId,
+        isCaptain: team.id === j.captainTeamId,
+        isBlocked: !!j.blockedTeamIds?.includes(team.id),
+        members: Object.values(gameState.players).filter((p) => p.teamId === team.id),
+      }))
+      .filter((r) => r.members.length > 0)
+      .sort((a, b) => b.score - a.score);
+  }, [isTeams, j, gameState, myTeamId]);
 
   if (!gameState || !j) {
     return (
@@ -112,6 +136,43 @@ export default function JeopardyCompScreen() {
     >
       {/* Scoreboard */}
       <div className="px-4 pt-4 pb-2">
+        {isTeams ? (
+          <div className="flex flex-wrap gap-2 justify-center">
+            {teamRows.map((r) => (
+              <div
+                key={r.team.id}
+                data-team={r.team.id}
+                data-score={r.score}
+                data-captain={r.isCaptain ? '1' : '0'}
+                data-blocked={r.isBlocked ? '1' : '0'}
+                className={`flex flex-col gap-1 px-3 py-2 rounded-xl border transition-all ${
+                  r.isMine ? 'bg-white/10' : 'bg-white/5'
+                } ${r.isBlocked ? 'opacity-50' : ''}`}
+                style={{
+                  minWidth: 150,
+                  borderColor: r.isMine ? r.team.color : `${r.team.color}55`,
+                  boxShadow: r.isMine ? `0 0 14px ${r.team.color}66` : undefined,
+                }}
+              >
+                <div className="flex items-center gap-2">
+                  {r.isCaptain && <span className="text-yellow-300 text-sm" title="Выбирает клетку">👑</span>}
+                  <TeamBadge team={r.team} size="md" />
+                  <span
+                    className={`font-mono font-bold ml-auto text-lg ${
+                      r.score > 0 ? 'text-yellow-300' : r.score < 0 ? 'text-red-400' : 'text-gray-300'
+                    }`}
+                  >
+                    {r.score}
+                  </span>
+                </div>
+                <div className="text-[11px] text-white/60 truncate max-w-[220px]">
+                  {r.members.map((m) => (m.id === j.captainId ? `👑${m.name}` : m.name)).join(', ')}
+                  {r.isMine && <span className="ml-1 text-yellow-300/80">· ты</span>}
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
         <div className="flex flex-wrap gap-2 justify-center">
           {sortedScores.map((p) => (
             <div
@@ -135,6 +196,7 @@ export default function JeopardyCompScreen() {
             </div>
           ))}
         </div>
+        )}
         <div className="text-center mt-2 text-sm text-yellow-200/80">
           Капитан раунда: <span className="font-bold text-yellow-300">{captainName}</span>
           {isCaptain && !j.currentCell && (
@@ -228,6 +290,7 @@ export default function JeopardyCompScreen() {
           timer={gameState.timer}
           maxTimer={gameState.maxTimer}
           players={gameState.players}
+          teams={isTeams ? gameState.teams : []}
         />
       )}
     </div>
@@ -246,7 +309,8 @@ interface OverlayProps {
   onAnswer: (idx: number) => void;
   timer: number;
   maxTimer: number;
-  players: Record<string, { name: string }>;
+  players: Record<string, { name: string; teamId?: string }>;
+  teams: Team[];
 }
 
 function QuestionOverlay({
@@ -260,11 +324,13 @@ function QuestionOverlay({
   timer,
   maxTimer,
   players,
+  teams,
 }: OverlayProps) {
   const reveal = jeopardy.reveal;
-  const answererName = jeopardy.currentAnswererId
-    ? players[jeopardy.currentAnswererId]?.name ?? '???'
-    : null;
+  const answerer = jeopardy.currentAnswererId ? players[jeopardy.currentAnswererId] : undefined;
+  const answererName = jeopardy.currentAnswererId ? answerer?.name ?? '???' : null;
+  const answererTeam = answerer?.teamId ? teams.find((t) => t.id === answerer.teamId) : undefined;
+  const isTeams = teams.length > 0;
 
   return (
     <div
@@ -321,9 +387,10 @@ function QuestionOverlay({
               Твой ответ! {timer > 0 && <span className="ml-1">⏱ {timer}с</span>}
             </div>
           ) : answererName ? (
-            <div className="text-yellow-200">
-              Отвечает: <span className="font-bold text-yellow-300">{answererName}</span>
-              {timer > 0 && <span className="ml-2 text-sm opacity-70">⏱ {timer}с</span>}
+            <div className="text-yellow-200 flex items-center justify-center gap-2 flex-wrap">
+              <span>Отвечает: <span className="font-bold text-yellow-300">{answererName}</span></span>
+              {answererTeam && <TeamBadge team={answererTeam} size="sm" />}
+              {timer > 0 && <span className="text-sm opacity-70">⏱ {timer}с</span>}
             </div>
           ) : jeopardy.buzzerOpen ? (
             <div className="text-yellow-200">
@@ -370,7 +437,9 @@ function QuestionOverlay({
                 Я ОТВЕЧАЮ!
               </button>
             ) : amBlocked ? (
-              <div className="text-red-400/80 text-sm">Ты уже ответил неверно — ждёшь</div>
+              <div className="text-red-400/80 text-sm">
+                {isTeams ? 'Твоя команда уже ответила неверно — ждёте' : 'Ты уже ответил неверно — ждёшь'}
+              </div>
             ) : (
               <div className="text-gray-400 text-sm">Баззер открыт для соперников...</div>
             )}

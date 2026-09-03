@@ -193,6 +193,10 @@ export interface GameState {
   teamMode: TeamMode;
   /** В teams-режиме 2..4 команды; иначе []. */
   teams: Team[];
+  /** Classic, teams: бой каждой команды со своим монстром (teamId -> HP, счёт, роли, итог раунда). */
+  teamBattle?: Record<string, { monsterHp: number; monsterMaxHp: number; floorCleared: boolean; score: number; captainId?: string; sacrificeId?: string; lastDamageDealt?: number; lastDamageTaken?: number; lastDefeated?: boolean }>;
+  /** Classic, ffa: личные очки (playerId -> очки). */
+  classicScores?: Record<string, number>;
   spyId?: string;
   /** Выбранные контент-паки комнаты (лобби). Нет ключа = builtin-пак режима. */
   contentPacks?: Partial<Record<GameMode, string>>;

@@ -2,11 +2,13 @@ import { useEffect, useState } from 'react';
 import { useStore } from '../store';
 import Timer from '../components/Timer';
 import AnswerButton from '../components/AnswerButton';
+import TeamBadge from '../components/TeamBadge';
+import { classicView, teamOf } from '../components/classicTeams';
 
 type ResultStep = 'correct-answer' | 'player-results' | 'damage-dealt' | 'damage-taken' | 'summary';
 
 export default function BattleRoom() {
-  const { gameState, playerId, submitAnswer, captainId, sacrificePlayerId } = useStore();
+  const { gameState, playerId, submitAnswer, captainId: storeCaptainId, sacrificePlayerId: storeSacrificeId } = useStore();
   const [resultStep, setResultStep] = useState<ResultStep | null>(null);
   const [prevPhase, setPrevPhase] = useState<string | null>(null);
 
@@ -36,6 +38,17 @@ export default function BattleRoom() {
   const floor = gameState.floors[gameState.currentFloor - 1];
   const params = floor?.params;
   const showResult = phase === 'results';
+
+  // Team-format view: own team's captain/sacrifice and round numbers in teams-mode.
+  const cv = classicView(gameState, playerId, storeCaptainId, storeSacrificeId);
+  const { captainId, sacrificeId: sacrificePlayerId } = cv;
+  const tb = cv.myBattle;
+  const damageDealt = cv.isTeams ? tb?.lastDamageDealt ?? 0 : results?.damageDealt ?? 0;
+  const damageTaken = cv.isTeams ? tb?.lastDamageTaken ?? 0 : results?.damageTaken ?? 0;
+  const monsterDefeated = cv.isTeams ? !!tb?.lastDefeated : !!results?.monsterDefeated;
+  const alreadyCleared = cv.isTeams && !!tb?.floorCleared && !tb?.lastDefeated;
+  // Answer list: own team in teams-mode, everyone otherwise.
+  const partyIds = new Set(cv.party.map((p) => p.id));
 
   const isCaptainMode = params?.whoAnswers === 'captain';
   const iAmCaptain = isCaptainMode && captainId === playerId;
@@ -105,21 +118,25 @@ export default function BattleRoom() {
           {/* Step 2: Who answered what */}
           {stepIdx >= 1 && (
             <div className="w-full glass-panel rounded-2xl p-3 animate-[fadeIn_0.4s_ease-out]">
-              <div className="text-xs text-gray-500 text-center mb-2 font-bold uppercase">Ответы команды</div>
+              <div className="text-xs text-gray-500 text-center mb-2 font-bold uppercase">
+                {cv.isTeams ? `Ответы команды «${cv.myTeam?.name ?? ''}»` : cv.isFfa ? 'Ответы игроков' : 'Ответы команды'}
+              </div>
               <div className="flex flex-col gap-1.5">
-                {Object.entries(results.playerAnswers).map(([pid, ans]) => {
+                {Object.entries(results.playerAnswers).filter(([pid]) => partyIds.has(pid)).map(([pid, ans]) => {
                   const player = gameState?.players[pid];
                   const isCorrect = ans === results.correctIndex;
                   const dmg = results.playerDamage?.[pid];
+                  const team = cv.isTeams ? undefined : teamOf(gameState, pid);
                   return (
                     <div key={pid} className={`flex items-center justify-between text-sm px-2 py-1.5 rounded-lg ${isCorrect ? 'bg-green-500/10' : 'bg-red-500/10'}`}>
                       <div className="flex items-center gap-2">
                         <span className="text-base">{isCorrect ? '✅' : ans === null ? '⏰' : '❌'}</span>
+                        {team && <TeamBadge team={team} size="sm" iconOnly />}
                         <span className={isCorrect ? 'text-green-300' : 'text-red-300'}>{player?.name ?? '?'}</span>
                       </div>
                       {stepIdx >= 2 && dmg !== undefined && (
                         <span className={`font-bold text-xs animate-[fadeIn_0.3s_ease-out] ${isCorrect ? 'text-green-400' : 'text-red-400'}`}>
-                          {isCorrect ? `+${dmg} ⚔️` : '−HP 💔'}
+                          {isCorrect ? (cv.isFfa ? `+${dmg} 🏆` : `+${dmg} ⚔️`) : '−HP 💔'}
                         </span>
                       )}
                     </div>
@@ -130,29 +147,29 @@ export default function BattleRoom() {
           )}
 
           {/* Step 3: Damage dealt to monster */}
-          {stepIdx >= 2 && results.damageDealt > 0 && (
+          {stepIdx >= 2 && damageDealt > 0 && (
             <div className="flex items-center gap-3 animate-[fadeIn_0.4s_ease-out] glass-panel rounded-2xl px-4 py-3 w-full justify-center">
               <span className="text-3xl">⚔️</span>
               <div>
-                <span className="text-green-400 font-black text-2xl">−{results.damageDealt}</span>
-                <span className="text-green-400/60 text-sm ml-2">урон монстру</span>
+                <span className="text-green-400 font-black text-2xl">−{damageDealt}</span>
+                <span className="text-green-400/60 text-sm ml-2">{alreadyCleared ? 'в командный счёт' : cv.isTeams ? 'урон вашему монстру' : 'урон монстру'}</span>
               </div>
             </div>
           )}
 
           {/* Step 4: Damage taken by party */}
-          {stepIdx >= 3 && results.damageTaken > 0 && (
+          {stepIdx >= 3 && damageTaken > 0 && (
             <div className="flex items-center gap-3 animate-[fadeIn_0.4s_ease-out] bg-red-500/10 border border-red-500/20 rounded-2xl px-4 py-3 w-full justify-center">
               <span className="text-3xl">💔</span>
               <div>
-                <span className="text-red-400 font-black text-2xl">−{results.damageTaken}</span>
-                <span className="text-red-400/60 text-sm ml-2">урон каждому</span>
+                <span className="text-red-400 font-black text-2xl">−{damageTaken}</span>
+                <span className="text-red-400/60 text-sm ml-2">{cv.isTeams ? 'урон каждому в команде' : 'урон каждому'}</span>
               </div>
             </div>
           )}
 
           {/* Step 5: Monster defeated? */}
-          {stepIdx >= 4 && results.monsterDefeated && (
+          {stepIdx >= 4 && monsterDefeated && (
             <div className="text-center animate-[fadeIn_0.5s_ease-out] py-2">
               <span className="text-[var(--color-dungeon-gold)] font-black text-2xl drop-shadow-[0_0_12px_rgba(245,197,24,0.4)] animate-bounce">
                 🎉 Монстр повержен!
@@ -160,9 +177,15 @@ export default function BattleRoom() {
             </div>
           )}
 
-          {stepIdx >= 4 && !results.monsterDefeated && results.damageTaken > 0 && (
+          {stepIdx >= 4 && !monsterDefeated && damageTaken > 0 && (
             <div className="text-center animate-[fadeIn_0.5s_ease-out] text-sm text-gray-400">
               Монстр выжил — бьём снова...
+            </div>
+          )}
+
+          {stepIdx >= 4 && alreadyCleared && (
+            <div className="text-center animate-[fadeIn_0.5s_ease-out] text-sm text-gray-400">
+              Ваш монстр уже повержен — ждём остальные команды, очки идут в зачёт
             </div>
           )}
         </div>

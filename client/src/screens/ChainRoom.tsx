@@ -1,6 +1,8 @@
 import { useStore } from '../store';
 import Timer from '../components/Timer';
 import AnswerButton from '../components/AnswerButton';
+import TeamBadge from '../components/TeamBadge';
+import { teamOf } from '../components/classicTeams';
 
 export default function ChainRoom() {
   const { gameState, playerId, submitAnswer, chainTurn, chainResult } = useStore();
@@ -11,6 +13,13 @@ export default function ChainRoom() {
   const currentPlayer = chainTurn ? gameState.players[chainTurn.playerId] : null;
   const question = chainTurn?.question;
   const remaining = gameState.chainQueue?.length ?? 0;
+  const isTeams = gameState.teamMode === 'teams';
+  const currentTeam = isTeams && chainTurn ? teamOf(gameState, chainTurn.playerId) : undefined;
+  // Streak list: teammates first in teams-mode.
+  const myTeamId = me?.teamId;
+  const streakPlayers = Object.values(gameState.players)
+    .filter(p => p.isAlive)
+    .sort((a, b) => (isTeams ? Number(b.teamId === myTeamId) - Number(a.teamId === myTeamId) : 0));
 
   return (
     <div className="flex flex-col gap-4">
@@ -38,7 +47,8 @@ export default function ChainRoom() {
             ? 'bg-yellow-900/60 border-yellow-500/50 animate-pulse'
             : 'bg-gray-800/60 border-gray-600/50'
         }`}>
-          <div className="font-bold text-sm">
+          <div className="font-bold text-sm flex items-center justify-center gap-2">
+            {currentTeam && <TeamBadge team={currentTeam} size="sm" iconOnly />}
             {isMyTurn ? '⚡ Ваш ход!' : `Отвечает: ${currentPlayer.name}`}
           </div>
         </div>
@@ -80,8 +90,9 @@ export default function ChainRoom() {
 
       {/* Streaks */}
       <div className="flex flex-wrap gap-2 justify-center mt-2">
-        {Object.values(gameState.players).filter(p => p.isAlive).map(p => (
+        {streakPlayers.map(p => (
           <div key={p.id} className="flex items-center gap-1 px-2 py-1 rounded-lg bg-gray-800/60 text-xs">
+            {isTeams && teamOf(gameState, p.id) && <TeamBadge team={teamOf(gameState, p.id)!} size="sm" iconOnly />}
             <span className={p.id === playerId ? 'text-[var(--color-dungeon-gold)]' : 'text-gray-300'}>
               {p.name}
             </span>

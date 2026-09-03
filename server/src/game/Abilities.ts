@@ -13,6 +13,10 @@ export function useAbility(io: Server, socketId: string, state: GameState): bool
   if (!classDef) return false;
 
   const roomCode = state.roomCode;
+  // Support abilities affect the whole party, or only the player's own team in teams-mode.
+  const allies = state.teamMode === 'teams' && player.teamId
+    ? Object.values(state.players).filter(p => p.teamId === player.teamId)
+    : Object.values(state.players);
 
   switch (player.playerClass) {
     case 'warrior':
@@ -28,13 +32,13 @@ export function useAbility(io: Server, socketId: string, state: GameState): bool
       break;
 
     case 'healer': {
-      const dead = Object.values(state.players).find(p => !p.isAlive && !p.isBot);
+      const dead = allies.find(p => !p.isAlive && !p.isBot);
       if (dead) {
         dead.isAlive = true;
         dead.personalHp = Math.round(dead.maxPersonalHp * 0.5);
         io.to(roomCode).emit('ability-used', socketId, classDef.abilityName, `resurrect:${dead.name}`);
       } else {
-        for (const p of Object.values(state.players)) {
+        for (const p of allies) {
           if (p.isAlive && p.personalHp < p.maxPersonalHp) {
             p.personalHp = Math.min(p.personalHp + 15, p.maxPersonalHp);
           }
@@ -54,8 +58,8 @@ export function useAbility(io: Server, socketId: string, state: GameState): bool
     }
 
     case 'bard':
-      // All players get bonus damage
-      for (const p of Object.values(state.players)) {
+      // All allies get bonus damage
+      for (const p of allies) {
         if (p.isAlive) {
           p.bonusDamage += 8;
         }

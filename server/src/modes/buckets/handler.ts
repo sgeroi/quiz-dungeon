@@ -1,6 +1,7 @@
 import type { Server, Socket } from 'socket.io';
-import type { GameState, Player } from '../../../../shared/types.ts';
+import type { GameOverStats, GameState, Player, TeamMode } from '../../../../shared/types.ts';
 import type { ModeHandler } from '../types.ts';
+import { groupByTeam, teamsWithPlayers } from '../../utils/teams.ts';
 import { BUCKET_SETS, type BucketSet } from './sets.ts';
 import { getBucketsData } from '../../data/contentStore.ts';
 
@@ -25,10 +26,29 @@ interface PublicSet {
   items: { text: string }[];
 }
 
+/** Per-team round breakdown (teams-mode). */
+interface TeamRoundResult {
+  correct: number;   // sum of members' correct placements
+  max: number;       // members * items
+  members: number;
+  points: number;    // what was added to teamScores
+}
+
 interface BucketsState {
   round: number;                 // 1..TOTAL_ROUNDS
   totalRounds: number;
+  /** Mirrors state.teamMode at game start (coop: golem; ffa/teams: no golem, no damage). */
+  teamMode: TeamMode;
+  /** Only meaningful in coop; kept in every format so old screens don't break. */
   boss: { hp: number; maxHp: number; emoji: string; name: string };
+  /** Cumulative personal points, playerId -> points (all formats; ffa uses it for the rating). */
+  scores: Record<string, number>;
+  /** teams: cumulative points per team. */
+  teamScores?: Record<string, number>;
+  /** teams: 'sum' when all teams are equal-sized, 'avg' (avg per player ×10, rounded) otherwise. */
+  teamScoring?: 'sum' | 'avg';
+  /** playerId -> Date.now() when the player pressed "done" (speed bonus). */
+  submittedAt: Record<string, number>;
   setIndex: number;              // index into BUCKET_SETS
   publicSet: PublicSet;          // sanitized
   // playerId -> itemIdx -> bucketIdx (-1 = not placed)
@@ -45,9 +65,18 @@ interface BucketsState {
   lastDamageDealt?: number;
   lastDamageTaken?: number;
   lastBossPrevHp?: number;
+  /** ffa: points earned this round (correct + speed bonus). */
+  lastRoundPoints?: Record<string, number>;
+  /** ffa: speed bonus part of lastRoundPoints. */
+  lastSpeedBonus?: Record<string, number>;
+  /** teams: per-team breakdown for the round just scored. */
+  lastTeamRound?: Record<string, TeamRoundResult>;
   // Reveal answers in results screen.
   answers?: number[]; // correct bucket per item
 }
+
+const SPEED_BONUS_MAX = 5;          // ffa: max bonus points per round
+const SPEED_BONUS_MIN_ACCURACY = 0.75; // ffa: bonus only if at least this share is correct
 
 interface RoomTimers {
   round?: ReturnType<typeof setTimeout>;
@@ -140,8 +169,10 @@ function startRound(io: Server, state: GameState): void {
   bs.answers = undefined; // revealed in endRound
   bs.submissions = {};
   bs.submitted = {};
+  bs.submittedAt = {};
   for (const p of Object.values(state.players)) {
     bs.submissions[p.id] = {};
+    bs.scores[p.id] ??= 0;
   }
   bs.lastRoundScores = undefined;
   bs.lastRoundCorrect = undefined;
@@ -150,6 +181,9 @@ function startRound(io: Server, state: GameState): void {
   bs.lastDamageDealt = undefined;
   bs.lastDamageTaken = undefined;
   bs.lastBossPrevHp = undefined;
+  bs.lastRoundPoints = undefined;
+  bs.lastSpeedBonus = undefined;
+  bs.lastTeamRound = undefined;
 
   bs.roundStartedAt = Date.now();
   bs.roundEndsAt = bs.roundStartedAt + ROUND_TIME * 1000;
@@ -198,8 +232,6 @@ function endRound(io: Server, state: GameState): void {
   const answers = answerKeys.get(state.roomCode) ?? [];
   bs.answers = answers; // reveal for the results screens
   const playerCorrect: Record<string, number> = {};
-  let teamCorrect = 0;
-  const aliveIds = getAlive(state).map(p => p.id);
   for (const pid of Object.keys(state.players)) {
     const subs = bs.submissions[pid] ?? {};
     let n = 0;
@@ -207,11 +239,52 @@ function endRound(io: Server, state: GameState): void {
       if (subs[i] === answers[i]) n++;
     }
     playerCorrect[pid] = n;
-    // Only alive players contribute to team damage.
-    if (aliveIds.includes(pid)) teamCorrect += n;
+  }
+  bs.lastRoundCorrect = playerCorrect;
+  bs.lastRoundScores = playerCorrect;
+
+  if (bs.teamMode === 'ffa') scoreFfaRound(state, bs, playerCorrect, answers.length);
+  else if (bs.teamMode === 'teams') scoreTeamsRound(state, bs, playerCorrect, answers.length);
+  else scoreCoopRound(state, bs, playerCorrect, answers.length);
+
+  state.phase = 'results';
+  state.timer = RESULTS_TIME;
+  state.maxTimer = RESULTS_TIME;
+  io.to(state.roomCode).emit('game-state', state);
+
+  if (bs.teamMode === 'coop') {
+    // Boss dead?
+    if (bs.boss.hp <= 0) {
+      setTimeout(() => finishGame(io, state, true), 2500);
+      return;
+    }
+
+    // Everyone dead?
+    if (getAlive(state).length === 0) {
+      setTimeout(() => finishGame(io, state, false), 2500);
+      return;
+    }
   }
 
-  const teamMax = answers.length * aliveIds.length;
+  // Last round?
+  if (bs.round >= bs.totalRounds) {
+    setTimeout(() => finishGame(io, state, bs.teamMode === 'coop' ? bs.boss.hp <= 0 : true), RESULTS_TIME * 1000);
+    return;
+  }
+
+  const next = setTimeout(() => startRound(io, state), RESULTS_TIME * 1000);
+  setTimers(state.roomCode, { results: next });
+}
+
+// =============== Scoring per format ===============
+
+/** coop: everyone's correct placements damage the golem; the golem strikes back. */
+function scoreCoopRound(state: GameState, bs: BucketsState, playerCorrect: Record<string, number>, items: number): void {
+  const aliveIds = getAlive(state).map(p => p.id);
+  let teamCorrect = 0;
+  for (const pid of aliveIds) teamCorrect += playerCorrect[pid] ?? 0;
+
+  const teamMax = items * aliveIds.length;
   const damageDealt = teamCorrect * DAMAGE_PER_CORRECT;
   const bossPrevHp = bs.boss.hp;
   bs.boss.hp = Math.max(0, bs.boss.hp - damageDealt);
@@ -234,56 +307,105 @@ function endRound(io: Server, state: GameState): void {
     }
   }
 
-  bs.lastRoundCorrect = playerCorrect;
-  bs.lastRoundScores = playerCorrect;
+  for (const pid of Object.keys(playerCorrect)) bs.scores[pid] = (bs.scores[pid] ?? 0) + playerCorrect[pid];
   bs.lastTeamCorrect = teamCorrect;
   bs.lastTeamMax = teamMax;
   bs.lastDamageDealt = damageDealt;
   bs.lastDamageTaken = damageTaken;
   bs.lastBossPrevHp = bossPrevHp;
+}
 
-  state.phase = 'results';
-  state.timer = RESULTS_TIME;
-  state.maxTimer = RESULTS_TIME;
-  io.to(state.roomCode).emit('game-state', state);
-
-  // Boss dead?
-  if (bs.boss.hp <= 0) {
-    setTimeout(() => finishGame(io, state, true), 2500);
-    return;
+/**
+ * ffa: points = correct placements + speed bonus. The bonus (0..SPEED_BONUS_MAX)
+ * scales with the time left when the player pressed "done" and is granted only
+ * when every item was placed and at least 75% of them are correct.
+ */
+function scoreFfaRound(state: GameState, bs: BucketsState, playerCorrect: Record<string, number>, items: number): void {
+  const points: Record<string, number> = {};
+  const bonus: Record<string, number> = {};
+  const roundMs = Math.max(1, bs.roundEndsAt - bs.roundStartedAt);
+  for (const pid of Object.keys(state.players)) {
+    const correct = playerCorrect[pid] ?? 0;
+    const placed = Object.keys(bs.submissions[pid] ?? {}).length;
+    const at = bs.submittedAt[pid];
+    let b = 0;
+    if (at && placed >= items && items > 0 && correct / items >= SPEED_BONUS_MIN_ACCURACY) {
+      const left = Math.max(0, Math.min(roundMs, bs.roundEndsAt - at));
+      b = Math.round((left / roundMs) * SPEED_BONUS_MAX);
+    }
+    bonus[pid] = b;
+    points[pid] = correct + b;
+    bs.scores[pid] = (bs.scores[pid] ?? 0) + points[pid];
   }
+  bs.lastRoundPoints = points;
+  bs.lastSpeedBonus = bonus;
+}
 
-  // Everyone dead?
-  if (getAlive(state).length === 0) {
-    setTimeout(() => finishGame(io, state, false), 2500);
-    return;
+/**
+ * teams: team round score = sum of members' correct placements when all
+ * non-empty teams are the same size; with unequal teams it is the average per
+ * player ×10, rounded (so a bigger team cannot win just by head count).
+ */
+function scoreTeamsRound(state: GameState, bs: BucketsState, playerCorrect: Record<string, number>, items: number): void {
+  const groups = groupByTeam(state);
+  const active = teamsWithPlayers(state);
+  const sizes = active.map(t => groups[t.id]?.length ?? 0);
+  const equal = sizes.length > 0 && sizes.every(n => n === sizes[0]);
+  bs.teamScoring = equal ? 'sum' : 'avg';
+  bs.teamScores ??= {};
+  const result: Record<string, TeamRoundResult> = {};
+  for (const t of state.teams ?? []) {
+    const members = groups[t.id] ?? [];
+    let correct = 0;
+    for (const p of members) correct += playerCorrect[p.id] ?? 0;
+    const pts = members.length === 0
+      ? 0
+      : equal ? correct : Math.round((correct / members.length) * 10);
+    result[t.id] = { correct, max: members.length * items, members: members.length, points: pts };
+    bs.teamScores[t.id] = (bs.teamScores[t.id] ?? 0) + pts;
   }
+  for (const pid of Object.keys(playerCorrect)) bs.scores[pid] = (bs.scores[pid] ?? 0) + playerCorrect[pid];
+  bs.lastTeamRound = result;
+}
 
-  // Last round?
-  if (bs.round >= bs.totalRounds) {
-    setTimeout(() => finishGame(io, state, bs.boss.hp <= 0), RESULTS_TIME * 1000);
-    return;
+function bestKey(scores: Record<string, number> | undefined, order: string[]): string | undefined {
+  let best: string | undefined;
+  let bestV = -Infinity;
+  for (const k of order) {
+    const v = scores?.[k] ?? 0;
+    if (v > bestV) { best = k; bestV = v; }
   }
-
-  const next = setTimeout(() => startRound(io, state), RESULTS_TIME * 1000);
-  setTimers(state.roomCode, { results: next });
+  return best;
 }
 
 function finishGame(io: Server, state: GameState, victoryOverride?: boolean): void {
   clearAllTimers(state.roomCode);
   const bs = getBucketsState(state);
-  const victory = victoryOverride !== undefined
-    ? victoryOverride
-    : (bs ? bs.boss.hp <= 0 : false);
+  const teamMode: TeamMode = bs?.teamMode ?? state.teamMode ?? 'coop';
+  const victory = teamMode !== 'coop'
+    ? true
+    : victoryOverride !== undefined
+      ? victoryOverride
+      : (bs ? bs.boss.hp <= 0 : false);
 
   state.phase = victory ? 'victory' : 'defeat';
   io.to(state.roomCode).emit('game-state', state);
 
-  const stats: Record<string, unknown> = {
+  const stats: GameOverStats = {
+    teamMode,
     rounds: bs?.round ?? 0,
-    bossHp: bs?.boss.hp ?? 0,
-    bossMaxHp: bs?.boss.maxHp ?? 0,
+    scores: bs?.scores ?? {},
   };
+  if (teamMode === 'coop') {
+    stats.bossHp = bs?.boss.hp ?? 0;
+    stats.bossMaxHp = bs?.boss.maxHp ?? 0;
+  } else if (teamMode === 'ffa') {
+    stats.winnerPlayerId = bestKey(bs?.scores, Object.keys(state.players));
+  } else {
+    stats.teamScores = bs?.teamScores ?? {};
+    stats.teamScoring = bs?.teamScoring;
+    stats.winnerTeamId = bestKey(bs?.teamScores, (state.teams ?? []).map(t => t.id));
+  }
   io.to(state.roomCode).emit('game-over', victory, stats);
 }
 
@@ -333,6 +455,7 @@ function scheduleBotAnswers(io: Server, state: GameState): void {
       const cur = getBucketsState(state);
       if (!cur || cur.round !== bs.round) return;
       cur.submitted[bot.id] = true;
+      cur.submittedAt[bot.id] = Date.now();
       io.to(state.roomCode).emit('game-state', state);
 
       // If everyone (humans + bots) is now ready, end the round early.
@@ -361,14 +484,24 @@ const handler: ModeHandler = {
     // a strong run barely wins, and a 50% run loses.
     const bossMaxHp = Math.max(300, 200 + aliveCount * 250);
 
+    const teamMode: TeamMode = state.teamMode ?? 'coop';
+    const scores: Record<string, number> = {};
+    for (const id of Object.keys(state.players)) scores[id] = 0;
+    const teamScores: Record<string, number> | undefined = teamMode === 'teams' ? {} : undefined;
+    if (teamScores) for (const t of state.teams ?? []) teamScores[t.id] = 0;
+
     const bs: BucketsState = {
       round: 0,
       totalRounds: TOTAL_ROUNDS,
+      teamMode,
       boss: { hp: bossMaxHp, maxHp: bossMaxHp, emoji: '👹', name: 'Голем-Сортировщик' },
+      scores,
+      teamScores,
       setIndex: 0,
       publicSet: { title: '', buckets: [], items: [] },
       submissions: {},
       submitted: {},
+      submittedAt: {},
       roundStartedAt: 0,
       roundEndsAt: 0,
       answers: undefined,
@@ -426,6 +559,7 @@ const handler: ModeHandler = {
       if (!player || !player.isAlive) return;
 
       bs.submitted[socket.id] = true;
+      bs.submittedAt[socket.id] ??= Date.now();
 
       // End round early only if EVERY alive player (humans AND bots) has
       // marked themselves as submitted. Bots are scheduled to submit

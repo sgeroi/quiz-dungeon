@@ -3,6 +3,7 @@ import type { GameState } from '../../../../shared/types.ts';
 import type { ModeHandler } from '../types.ts';
 import { JEOPARDY_GRID, type JeopardyCell, type JeopardyGrid } from './grid.ts';
 import { getJeopardyData } from '../../data/contentStore.ts';
+import { getTeamOf, playersOfTeam, teamsWithPlayers } from '../../utils/teams.ts';
 
 // Full grid (with answers) per room, taken from the chosen content pack at start.
 const gridByRoom = new Map<string, JeopardyGrid>();
@@ -28,7 +29,13 @@ interface JeopardyState {
   grid: { topics: string[]; cells: Record<string, { value: number }[]> };
   played: string[]; // cell keys "t,v"
   captainId: string | null;
+  // teams-mode: team of the current captain (the team that picks the cell).
+  captainTeamId: string | null;
   scores: Record<string, number>; // playerId -> score (can be negative)
+  // teams-mode only: teamId -> team total (points of an answer go to the answerer's team).
+  teamScores: Record<string, number> | null;
+  // teams-mode: teams that already failed this cell (all their members are in blockedIds too).
+  blockedTeamIds: string[];
   currentCell: {
     topicIdx: number;
     valueIdx: number;
@@ -72,17 +79,64 @@ function cellKey(topicIdx: number, valueIdx: number): string {
   return `${topicIdx},${valueIdx}`;
 }
 
+function isTeams(state: GameState): boolean {
+  return state.teamMode === 'teams' && (state.teams?.length ?? 0) > 0;
+}
+
+/** Captain for a team: prefer a connected human, then any member (bots auto-pick). */
+function pickCaptainOfTeam(state: GameState, teamId: string): string | null {
+  const members = playersOfTeam(state, teamId);
+  if (members.length === 0) return null;
+  const human = members.find(p => !p.isBot);
+  return (human ?? members[0]).id;
+}
+
+/** Round-robin: the non-empty team after `fromTeamId` in state.teams order. */
+function nextTeamId(state: GameState, fromTeamId: string | null): string | null {
+  const teams = teamsWithPlayers(state);
+  if (teams.length === 0) return null;
+  const idx = teams.findIndex(t => t.id === fromTeamId);
+  return teams[(idx + 1) % teams.length].id;
+}
+
+/** Ensure the captain is a present player; in teams-mode also that he belongs to captainTeamId. */
+function ensureCaptain(state: GameState, j: JeopardyState): void {
+  if (isTeams(state)) {
+    if (!j.captainTeamId || playersOfTeam(state, j.captainTeamId).length === 0) {
+      j.captainTeamId = nextTeamId(state, j.captainTeamId) ?? getTeamOf(state, state.hostId)?.id ?? null;
+    }
+    const cap = j.captainId ? state.players[j.captainId] : undefined;
+    if (!cap || cap.teamId !== j.captainTeamId) {
+      j.captainId = j.captainTeamId ? pickCaptainOfTeam(state, j.captainTeamId) : state.hostId;
+    }
+    return;
+  }
+  if (!j.captainId || !state.players[j.captainId]) j.captainId = state.hostId;
+}
+
+function winnerOf(scores: Record<string, number>): string | undefined {
+  let best: string | undefined;
+  let bestScore = -Infinity;
+  for (const [id, s] of Object.entries(scores)) {
+    if (s > bestScore) { best = id; bestScore = s; }
+  }
+  return best;
+}
+
 // Build the public state slice we send to clients (no correct answers leaked).
 function publicJ(j: JeopardyState) {
   return {
     grid: j.grid,
     played: j.played,
     captainId: j.captainId,
+    captainTeamId: j.captainTeamId,
     scores: j.scores,
+    teamScores: j.teamScores,
     currentCell: j.currentCell,
     buzzerOpen: j.buzzerOpen,
     currentAnswererId: j.currentAnswererId,
     blockedIds: j.blockedIds,
+    blockedTeamIds: j.blockedTeamIds,
     reveal: j.reveal,
     message: j.message,
     answerTimeSec: ANSWER_TIME_SEC,
@@ -143,17 +197,32 @@ function startGame(io: Server, state: GameState): void {
   const scores: Record<string, number> = {};
   for (const p of players) scores[p.id] = 0;
 
-  const captainId = state.hostId;
+  const teams = isTeams(state);
+  let teamScores: Record<string, number> | null = null;
+  let captainId: string | null = state.hostId;
+  let captainTeamId: string | null = null;
+  if (teams) {
+    teamScores = {};
+    for (const t of teamsWithPlayers(state)) teamScores[t.id] = 0;
+    // First captain: the host's team (host picks), else the first non-empty team.
+    captainTeamId = getTeamOf(state, state.hostId)?.id ?? teamsWithPlayers(state)[0]?.id ?? null;
+    captainId = state.players[state.hostId]?.teamId === captainTeamId
+      ? state.hostId
+      : captainTeamId ? pickCaptainOfTeam(state, captainTeamId) : state.hostId;
+  }
 
   const j: JeopardyState = {
     grid: publicGrid,
     played: [],
     captainId,
+    captainTeamId,
     scores,
+    teamScores,
     currentCell: null,
     buzzerOpen: false,
     currentAnswererId: null,
     blockedIds: [],
+    blockedTeamIds: [],
     reveal: null,
     message: null,
   };
@@ -257,6 +326,7 @@ function pickCell(io: Server, state: GameState, socketId: string, topicIdx: numb
   j.buzzerOpen = true;
   j.currentAnswererId = null;
   j.blockedIds = [];
+  j.blockedTeamIds = [];
   j.reveal = null;
   j.message = `Тема: ${topic}. Цена: ${cell.value}`;
 
@@ -347,6 +417,10 @@ function handleAnswer(io: Server, state: GameState, socketId: string, answerIdx:
 
   const correct = !isTimeout && answerIdx === j._activeCell.correctIndex;
   const value = j._activeCell.value;
+  const teams = isTeams(state);
+  const team = teams ? getTeamOf(state, socketId) : undefined;
+  const who = state.players[socketId]?.name ?? 'Игрок';
+  const label = team ? `${team.name} (${who})` : who;
 
   // Clear current answerer immediately so any straggler calls bail out at
   // the `currentAnswererId !== socketId` check above.
@@ -354,23 +428,36 @@ function handleAnswer(io: Server, state: GameState, socketId: string, answerIdx:
 
   if (correct) {
     j.scores[socketId] = (j.scores[socketId] ?? 0) + value;
+    if (team && j.teamScores) j.teamScores[team.id] = (j.teamScores[team.id] ?? 0) + value;
+    // The scorer (and his team) picks the next cell.
     j.captainId = socketId;
+    if (team) j.captainTeamId = team.id;
     j.reveal = { correctIndex: j._activeCell.correctIndex, chosenIndex: answerIdx, correct: true };
-    j.message = `${state.players[socketId]?.name ?? 'Игрок'} +${value}`;
+    j.message = `${label} +${value}`;
     j.buzzerOpen = false;
     j._resolving = false;
     broadcast(io, state);
     setTimeout(() => closeCell(io, state), REVEAL_DELAY_MS);
   } else {
     j.scores[socketId] = (j.scores[socketId] ?? 0) - value;
+    if (team && j.teamScores) j.teamScores[team.id] = (j.teamScores[team.id] ?? 0) - value;
     if (!j.blockedIds.includes(socketId)) j.blockedIds.push(socketId);
+    if (team) {
+      // Whole team is out for this cell; the buzzer stays open for the other teams.
+      if (!j.blockedTeamIds.includes(team.id)) j.blockedTeamIds.push(team.id);
+      for (const p of playersOfTeam(state, team.id)) {
+        if (!j.blockedIds.includes(p.id)) j.blockedIds.push(p.id);
+      }
+    }
     // Show brief "wrong" reveal, then reopen buzzer for the rest.
+    // Only the chosen (wrong) option is exposed — the correct one stays hidden
+    // until the cell is finally resolved.
     j.reveal = {
-      correctIndex: j._activeCell.correctIndex,
+      correctIndex: -1,
       chosenIndex: isTimeout ? null : answerIdx,
       correct: false,
     };
-    j.message = `${state.players[socketId]?.name ?? 'Игрок'} −${value}`;
+    j.message = `${label} −${value}`;
     broadcast(io, state);
 
     setTimeout(() => {
@@ -412,6 +499,7 @@ function revealAndClose(io: Server, state: GameState, _correct: boolean): void {
 function closeCell(io: Server, state: GameState): void {
   const j = getJ(state);
   if (!j || !j.currentCell || !j._activeCell) return;
+  const scoredThisCell = !!j.reveal?.correct;
   const key = cellKey(j._activeCell.topicIdx, j._activeCell.valueIdx);
   if (!j.played.includes(key)) j.played.push(key);
   j.currentCell = null;
@@ -419,24 +507,37 @@ function closeCell(io: Server, state: GameState): void {
   j.buzzerOpen = false;
   j.currentAnswererId = null;
   j.blockedIds = [];
+  j.blockedTeamIds = [];
   j.reveal = null;
   j.message = null;
   j._resolving = false;
+
+  const teams = isTeams(state);
 
   // Game over?
   if (j.played.length >= 25) {
     state.phase = 'victory';
     broadcast(io, state);
-    io.to(state.roomCode).emit('game-over', true, { scores: j.scores });
+    const stats: Record<string, unknown> = { teamMode: state.teamMode ?? 'ffa', scores: j.scores };
+    if (teams && j.teamScores) {
+      stats.teamScores = j.teamScores;
+      stats.winnerTeamId = winnerOf(j.teamScores);
+    } else {
+      stats.winnerPlayerId = winnerOf(j.scores);
+    }
+    io.to(state.roomCode).emit('game-over', true, stats);
     clearAllTimers(state.roomCode);
     roomTimers.delete(state.roomCode);
     return;
   }
 
-  // If captain is no longer in the room, fall back to host.
-  if (!j.captainId || !state.players[j.captainId]) {
-    j.captainId = state.hostId;
+  // teams: if nobody scored on this cell the pick passes to the next team (round-robin).
+  if (teams && !scoredThisCell) {
+    j.captainTeamId = nextTeamId(state, j.captainTeamId);
+    j.captainId = j.captainTeamId ? pickCaptainOfTeam(state, j.captainTeamId) : null;
   }
+  // If captain is no longer in the room (or not in the captain team), fix it up.
+  ensureCaptain(state, j);
 
   broadcast(io, state);
   scheduleBotCaptainPick(io, state);

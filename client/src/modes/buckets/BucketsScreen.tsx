@@ -1,6 +1,8 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { socket } from '../../socket';
 import { useStore } from '../../store';
+import TeamBadge from '../../components/TeamBadge';
+import type { GameState, Player, Team, TeamMode } from '../../types';
 
 interface PublicBucket { name: string; emoji: string }
 interface PublicItem { text: string }
@@ -10,11 +12,17 @@ interface PublicSet {
   items: PublicItem[];
 }
 interface BossInfo { hp: number; maxHp: number; emoji: string; name: string }
+interface TeamRoundResult { correct: number; max: number; members: number; points: number }
 
+/** Snapshot gameState.buckets (see server/src/modes/buckets/handler.ts). */
 interface BucketsServerState {
   round: number;
   totalRounds: number;
+  teamMode?: TeamMode;
   boss: BossInfo;
+  scores?: Record<string, number>;
+  teamScores?: Record<string, number>;
+  teamScoring?: 'sum' | 'avg';
   publicSet: PublicSet;
   submissions: Record<string, Record<number, number>>;
   submitted: Record<string, boolean>;
@@ -24,9 +32,23 @@ interface BucketsServerState {
   lastDamageDealt?: number;
   lastDamageTaken?: number;
   lastBossPrevHp?: number;
+  lastRoundPoints?: Record<string, number>;
+  lastSpeedBonus?: Record<string, number>;
+  lastTeamRound?: Record<string, TeamRoundResult>;
   // Correct bucket index (0..3) for each item in the current round's
   // shuffled order. Server populates this; revealed in RoundResults.
   answers?: number[];
+}
+
+const MEDALS = ['🥇', '🥈', '🥉'];
+
+function modeOf(gameState: GameState, buckets: BucketsServerState): TeamMode {
+  return buckets.teamMode ?? gameState.teamMode ?? 'coop';
+}
+
+/** Players sorted by cumulative points (desc), stable by name. */
+function ranking(players: Player[], scores: Record<string, number> | undefined): Player[] {
+  return [...players].sort((a, b) => ((scores?.[b.id] ?? 0) - (scores?.[a.id] ?? 0)) || a.name.localeCompare(b.name));
 }
 
 export default function BucketsScreen() {
@@ -70,6 +92,8 @@ export default function BucketsScreen() {
     );
   }
 
+  const mode = modeOf(gameState, buckets);
+
   // Floor-intro / loading between rounds.
   if (phase === 'floor-intro') {
     return (
@@ -77,7 +101,10 @@ export default function BucketsScreen() {
         <div className="glass-panel rounded-3xl p-8 text-center max-w-md w-full animate-[fadeIn_0.5s_ease-out]">
           <div className="text-6xl mb-3 animate-[float_3s_ease-in-out_infinite]">🪣</div>
           <div className="text-xl font-bold text-white mb-1">Сортировка</div>
-          <div className="text-sm text-gray-400 mb-4">Раунд {buckets.round + 1} / {buckets.totalRounds}</div>
+          <div className="text-sm text-gray-400 mb-1">Раунд {buckets.round + 1} / {buckets.totalRounds}</div>
+          <div className="text-xs text-gray-500 mb-4">
+            {mode === 'ffa' ? '🥇 Каждый сам за себя' : mode === 'teams' ? '⚔️ Команда на команду' : '🤝 Все против голема'}
+          </div>
           <div className="text-xs uppercase tracking-wider text-gray-500">Готовимся…</div>
         </div>
       </div>
@@ -85,7 +112,7 @@ export default function BucketsScreen() {
   }
 
   if (isResultPhase) {
-    return <RoundResults gameState={gameState} buckets={buckets} myId={playerId ?? ''} />;
+    return <RoundResults gameState={gameState} buckets={buckets} myId={playerId ?? ''} mode={mode} />;
   }
 
   // ===== answering phase =====
@@ -138,8 +165,8 @@ export default function BucketsScreen() {
 
   return (
     <div className="h-full flex flex-col p-3 sm:p-4 gap-3 overflow-hidden">
-      {/* Header: timer + boss */}
-      <BucketsHeader gameState={gameState} buckets={buckets} />
+      {/* Header: timer + boss (coop) / score (ffa, teams) */}
+      <BucketsHeader gameState={gameState} buckets={buckets} myId={playerId ?? ''} mode={mode} />
 
       {/* Title strip */}
       <div className="glass-panel rounded-2xl px-4 py-2 flex items-center justify-between">
@@ -153,7 +180,7 @@ export default function BucketsScreen() {
       </div>
 
       {/* Live progress map */}
-      <TeamProgress gameState={gameState} buckets={buckets} myId={playerId ?? ''} />
+      <LiveProgress gameState={gameState} buckets={buckets} myId={playerId ?? ''} mode={mode} />
 
       {/* Main panel */}
       <div className="flex-1 grid grid-cols-1 lg:grid-cols-2 gap-3 min-h-0">
@@ -274,7 +301,7 @@ export default function BucketsScreen() {
           ) : selectedItem !== null ? (
             <span>Выбран предмет: <span className="text-[var(--color-dungeon-gold)]">{set.items[selectedItem].text}</span> → кликни корзину</span>
           ) : allPlaced ? (
-            <span className="text-emerald-400">Всё разложено!</span>
+            <span className="text-emerald-400">{mode === 'ffa' ? 'Всё разложено! Сдай быстрее — бонус за скорость' : 'Всё разложено!'}</span>
           ) : (
             <span>Разложи {totalItems - placedCount} предмет(ов)</span>
           )}
@@ -303,32 +330,111 @@ export default function BucketsScreen() {
 // Sub-components
 // ============================================================
 
-function BucketsHeader({
-  gameState,
-  buckets,
-}: {
-  gameState: NonNullable<ReturnType<typeof useStore.getState>['gameState']>;
-  buckets: BucketsServerState;
-}) {
+function TimerBlock({ gameState }: { gameState: GameState }) {
+  const seconds = gameState.timer ?? 0;
+  const isLow = seconds <= 10 && gameState.phase === 'answering';
+  const isCritical = seconds <= 5 && gameState.phase === 'answering';
+  return (
+    <div className="flex flex-col items-center min-w-[60px]">
+      <span className={`text-2xl font-black font-mono ${isCritical ? 'text-red-400 animate-pulse' : isLow ? 'text-red-400' : 'text-white'}`}>
+        {seconds}
+      </span>
+      <span className="text-[10px] uppercase tracking-wider text-gray-500">сек</span>
+    </div>
+  );
+}
+
+function TimerBar({ gameState }: { gameState: GameState }) {
   const seconds = gameState.timer ?? 0;
   const max = gameState.maxTimer || 60;
   const pct = max > 0 ? (seconds / max) * 100 : 0;
-  const isLow = seconds <= 10 && gameState.phase === 'answering';
   const isCritical = seconds <= 5 && gameState.phase === 'answering';
+  return (
+    <div className="h-1 rounded-full bg-black/40 mt-1 overflow-hidden">
+      <div
+        className={`h-full rounded-full transition-all duration-500 ${isCritical ? 'bg-red-500' : 'bg-gradient-to-r from-[var(--color-dungeon-mana)] to-cyan-400'}`}
+        style={{ width: `${pct}%` }}
+      />
+    </div>
+  );
+}
 
+function BucketsHeader({
+  gameState,
+  buckets,
+  myId,
+  mode,
+}: {
+  gameState: GameState;
+  buckets: BucketsServerState;
+  myId: string;
+  mode: TeamMode;
+}) {
+  const isCritical = (gameState.timer ?? 0) <= 5 && gameState.phase === 'answering';
+
+  if (mode === 'ffa') {
+    const players = Object.values(gameState.players);
+    const ranked = ranking(players, buckets.scores);
+    const myRank = ranked.findIndex((p) => p.id === myId) + 1;
+    const myScore = buckets.scores?.[myId] ?? 0;
+    return (
+      <div className="glass-panel rounded-2xl px-3 py-2 flex items-center gap-3" data-testid="buckets-header-ffa">
+        <TimerBlock gameState={gameState} />
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 mb-1">
+            <span className="text-2xl">🥇</span>
+            <div className="flex-1 min-w-0">
+              <div className="text-xs sm:text-sm font-bold text-white truncate">Каждый сам за себя</div>
+              <div className="text-[10px] text-gray-400">Раунд {Math.max(1, buckets.round)} / {buckets.totalRounds}</div>
+            </div>
+            <div className="text-right whitespace-nowrap">
+              <div className="text-sm font-black text-[var(--color-dungeon-gold)] tabular-nums">{myScore} <span className="text-[10px] text-gray-400 font-bold">очк.</span></div>
+              <div className="text-[10px] text-gray-400">{myRank > 0 ? `${myRank}-е место из ${ranked.length}` : ''}</div>
+            </div>
+          </div>
+          <TimerBar gameState={gameState} />
+        </div>
+      </div>
+    );
+  }
+
+  if (mode === 'teams') {
+    const teams = gameState.teams ?? [];
+    const myTeamId = gameState.players[myId]?.teamId;
+    return (
+      <div className="glass-panel rounded-2xl px-3 py-2 flex items-center gap-3" data-testid="buckets-header-teams">
+        <TimerBlock gameState={gameState} />
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 mb-1 overflow-x-auto">
+            <div className="min-w-0 mr-1">
+              <div className="text-xs sm:text-sm font-bold text-white whitespace-nowrap">⚔️ Команда на команду</div>
+              <div className="text-[10px] text-gray-400">Раунд {Math.max(1, buckets.round)} / {buckets.totalRounds}</div>
+            </div>
+            <div className="flex items-center gap-1.5 ml-auto">
+              {teams.map((t) => (
+                <span
+                  key={t.id}
+                  className={`inline-flex items-center gap-1 rounded-full pl-0.5 pr-2 py-0.5 ${t.id === myTeamId ? 'ring-1 ring-white/40' : ''}`}
+                  style={{ backgroundColor: `${t.color}26` }}
+                  title={t.name}
+                >
+                  <TeamBadge team={t} size="sm" iconOnly />
+                  <span className="text-xs font-black tabular-nums" style={{ color: t.color }}>{buckets.teamScores?.[t.id] ?? 0}</span>
+                </span>
+              ))}
+            </div>
+          </div>
+          <TimerBar gameState={gameState} />
+        </div>
+      </div>
+    );
+  }
+
+  // coop: golem
   const bossPct = buckets.boss.maxHp > 0 ? (buckets.boss.hp / buckets.boss.maxHp) * 100 : 0;
-
   return (
     <div className="glass-panel rounded-2xl px-3 py-2 flex items-center gap-3">
-      {/* Timer */}
-      <div className="flex flex-col items-center min-w-[60px]">
-        <span className={`text-2xl font-black font-mono ${isCritical ? 'text-red-400 animate-pulse' : isLow ? 'text-red-400' : 'text-white'}`}>
-          {seconds}
-        </span>
-        <span className="text-[10px] uppercase tracking-wider text-gray-500">сек</span>
-      </div>
-
-      {/* Boss */}
+      <TimerBlock gameState={gameState} />
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2 mb-1">
           <span className={`text-2xl ${isCritical ? 'animate-[shake_0.6s_ease-in-out_infinite]' : ''}`}>{buckets.boss.emoji}</span>
@@ -348,82 +454,80 @@ function BucketsHeader({
             style={{ width: `${bossPct}%` }}
           />
         </div>
-        <div className="h-1 rounded-full bg-black/40 mt-1 overflow-hidden">
-          <div
-            className={`h-full rounded-full transition-all duration-500 ${isCritical ? 'bg-red-500' : 'bg-gradient-to-r from-[var(--color-dungeon-mana)] to-cyan-400'}`}
-            style={{ width: `${pct}%` }}
-          />
-        </div>
+        <TimerBar gameState={gameState} />
       </div>
     </div>
   );
 }
 
-function TeamProgress({
-  gameState,
-  buckets,
-  myId,
-}: {
-  gameState: NonNullable<ReturnType<typeof useStore.getState>['gameState']>;
-  buckets: BucketsServerState;
-  myId: string;
-}) {
-  const players = useMemo(() => Object.values(gameState.players), [gameState.players]);
-  const total = buckets.publicSet.items.length || 20;
-
+function PlayerChip({ p, buckets, myId, total }: { p: Player; buckets: BucketsServerState; myId: string; total: number }) {
+  const placed = Object.keys(buckets.submissions[p.id] ?? {}).length;
+  const done = !!buckets.submitted[p.id];
+  const dead = !p.isAlive;
+  const isMe = p.id === myId;
+  const pct = Math.min(100, Math.round((placed / total) * 100));
   return (
-    <div className="glass-panel rounded-2xl px-3 py-2 flex items-center gap-2 overflow-x-auto">
-      <span className="text-[10px] uppercase tracking-wider text-gray-500 mr-1 whitespace-nowrap">Команда</span>
-      {players.map((p) => {
-        const placed = Object.keys(buckets.submissions[p.id] ?? {}).length;
-        const done = !!buckets.submitted[p.id];
-        const dead = !p.isAlive;
-        const isMe = p.id === myId;
-        const pct = Math.min(100, Math.round((placed / total) * 100));
-        return (
-          <div
-            key={p.id}
-            className={`flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs whitespace-nowrap
-              ${isMe ? 'bg-[var(--color-dungeon-gold)]/15 border border-[var(--color-dungeon-gold)]/30' : 'bg-white/5 border border-white/10'}
-              ${dead ? 'opacity-40' : ''}
-            `}
-            title={`${p.name}: ${placed}/${total}`}
-          >
-            <span>{dead ? '👻' : done ? '✅' : p.isBot ? '🤖' : '🧑'}</span>
-            <span className="text-white max-w-[80px] truncate">{p.name}</span>
-            <div className="w-10 h-1 rounded-full bg-black/40 overflow-hidden">
-              <div className="h-full bg-emerald-400" style={{ width: `${pct}%` }} />
-            </div>
-            <span className="font-mono text-gray-400">{placed}</span>
-          </div>
-        );
-      })}
+    <div
+      className={`flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs whitespace-nowrap
+        ${isMe ? 'bg-[var(--color-dungeon-gold)]/15 border border-[var(--color-dungeon-gold)]/30' : 'bg-white/5 border border-white/10'}
+        ${dead ? 'opacity-40' : ''}
+      `}
+      title={`${p.name}: ${placed}/${total}`}
+    >
+      <span>{dead ? '👻' : done ? '✅' : p.isBot ? '🤖' : '🧑'}</span>
+      <span className="text-white max-w-[80px] truncate">{p.name}</span>
+      <div className="w-10 h-1 rounded-full bg-black/40 overflow-hidden">
+        <div className="h-full bg-emerald-400" style={{ width: `${pct}%` }} />
+      </div>
+      <span className="font-mono text-gray-400">{placed}</span>
     </div>
   );
 }
 
-function RoundResults({
+function LiveProgress({
   gameState,
   buckets,
   myId,
+  mode,
 }: {
-  gameState: NonNullable<ReturnType<typeof useStore.getState>['gameState']>;
+  gameState: GameState;
   buckets: BucketsServerState;
   myId: string;
+  mode: TeamMode;
 }) {
-  const totalItems = buckets.publicSet.items.length || 20;
-  const myCorrect = (buckets.lastRoundScores && buckets.lastRoundScores[myId]) ?? 0;
-  const teamCorrect = buckets.lastTeamCorrect ?? 0;
-  const teamMax = buckets.lastTeamMax ?? totalItems;
-  const damageDealt = buckets.lastDamageDealt ?? 0;
-  const damageTaken = buckets.lastDamageTaken ?? 0;
-  const bossPrevHp = buckets.lastBossPrevHp ?? buckets.boss.maxHp;
+  const players = useMemo(() => Object.values(gameState.players), [gameState.players]);
+  const total = buckets.publicSet.items.length || 20;
 
-  const myAlive = gameState.players[myId]?.isAlive;
+  if (mode === 'teams') {
+    const teams = gameState.teams ?? [];
+    return (
+      <div className="glass-panel rounded-2xl px-3 py-2 flex items-center gap-3 overflow-x-auto">
+        {teams.map((t) => {
+          const members = players.filter((p) => p.teamId === t.id);
+          if (members.length === 0) return null;
+          return (
+            <div key={t.id} className="flex items-center gap-1.5 shrink-0 rounded-xl px-1.5 py-1" style={{ backgroundColor: `${t.color}14`, border: `1px solid ${t.color}40` }}>
+              <TeamBadge team={t} size="sm" iconOnly />
+              {members.map((p) => <PlayerChip key={p.id} p={p} buckets={buckets} myId={myId} total={total} />)}
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
 
-  // Build per-item review (only for current player) — green if correctly
-  // sorted, red if wrongly sorted, gray if not placed.
+  return (
+    <div className="glass-panel rounded-2xl px-3 py-2 flex items-center gap-2 overflow-x-auto">
+      <span className="text-[10px] uppercase tracking-wider text-gray-500 mr-1 whitespace-nowrap">{mode === 'ffa' ? 'Игроки' : 'Команда'}</span>
+      {players.map((p) => <PlayerChip key={p.id} p={p} buckets={buckets} myId={myId} total={total} />)}
+    </div>
+  );
+}
+
+/** Per-item review of MY sorting (green / red / grey). Shared by all formats. */
+function MyReview({ buckets, myId }: { buckets: BucketsServerState; myId: string }) {
   const correctAnswers = buckets.answers ?? [];
+  if (correctAnswers.length === 0) return null;
   const mySubs: Record<number, number> = (buckets.submissions?.[myId]) ?? {};
   const reviewItems = buckets.publicSet.items.map((it, idx) => {
     const placed = mySubs[idx];
@@ -434,6 +538,71 @@ function RoundResults({
     }
     return { idx, text: it.text, placed, correctBucket, status };
   });
+  const wrongCount = reviewItems.filter((it) => it.status !== 'correct').length;
+
+  return (
+    <div className="mt-5 text-left">
+      <div className="text-xs uppercase tracking-wider text-gray-400 mb-2 text-center">
+        Твоя сортировка{wrongCount > 0 ? ` · ошибок: ${wrongCount}` : ' · без ошибок!'}
+      </div>
+      <div className="flex flex-wrap gap-1.5 justify-center">
+        {reviewItems.map((it) => {
+          const correctName = buckets.publicSet.buckets[it.correctBucket]?.name ?? '?';
+          const placedName = it.placed !== undefined && it.placed >= 0
+            ? buckets.publicSet.buckets[it.placed]?.name ?? '?'
+            : '—';
+          const cls = it.status === 'correct'
+            ? 'bg-emerald-500/15 border-emerald-400/40 text-emerald-200'
+            : it.status === 'wrong'
+              ? 'bg-rose-500/15 border-rose-400/40 text-rose-200'
+              : 'bg-white/5 border-white/15 text-gray-300';
+          const icon = it.status === 'correct' ? '✓' : it.status === 'wrong' ? '✗' : '·';
+          const tooltip = it.status === 'correct'
+            ? `Верно: ${correctName}`
+            : it.status === 'wrong'
+              ? `Положил в «${placedName}», нужно «${correctName}»`
+              : `Не положил. Нужно «${correctName}»`;
+          return (
+            <span key={it.idx} title={tooltip} className={`text-xs px-2 py-1 rounded-lg border ${cls}`}>
+              <span className="mr-1 font-bold">{icon}</span>
+              {it.text}
+              {it.status !== 'correct' && <span className="ml-1 text-[10px] opacity-70">→ {correctName}</span>}
+            </span>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function RoundResults({
+  gameState,
+  buckets,
+  myId,
+  mode,
+}: {
+  gameState: GameState;
+  buckets: BucketsServerState;
+  myId: string;
+  mode: TeamMode;
+}) {
+  const totalItems = buckets.publicSet.items.length || 20;
+  const myCorrect = (buckets.lastRoundScores && buckets.lastRoundScores[myId]) ?? 0;
+  const isLast = buckets.round >= buckets.totalRounds;
+  const footer = (
+    <div className="mt-4 text-xs text-gray-500">{isLast ? 'Подводим итоги…' : 'Следующий раунд через несколько секунд…'}</div>
+  );
+
+  if (mode === 'ffa') return <FfaRoundResults gameState={gameState} buckets={buckets} myId={myId} totalItems={totalItems} myCorrect={myCorrect} footer={footer} />;
+  if (mode === 'teams') return <TeamsRoundResults gameState={gameState} buckets={buckets} myId={myId} totalItems={totalItems} myCorrect={myCorrect} footer={footer} />;
+
+  // ---- coop ----
+  const teamCorrect = buckets.lastTeamCorrect ?? 0;
+  const teamMax = buckets.lastTeamMax ?? totalItems;
+  const damageDealt = buckets.lastDamageDealt ?? 0;
+  const damageTaken = buckets.lastDamageTaken ?? 0;
+  const bossPrevHp = buckets.lastBossPrevHp ?? buckets.boss.maxHp;
+  const myAlive = gameState.players[myId]?.isAlive;
 
   return (
     <div className="h-full overflow-y-auto p-4 sm:p-6">
@@ -471,45 +640,154 @@ function RoundResults({
           <div className="mt-2 text-xs text-red-300">Ты пал. Будешь наблюдать.</div>
         )}
 
-        {/* Per-item review with correct / incorrect highlights */}
-        {correctAnswers.length > 0 && (
-          <div className="mt-5 text-left">
-            <div className="text-xs uppercase tracking-wider text-gray-400 mb-2 text-center">
-              Твоя сортировка
-            </div>
-            <div className="flex flex-wrap gap-1.5 justify-center">
-              {reviewItems.map((it) => {
-                const correctName = buckets.publicSet.buckets[it.correctBucket]?.name ?? '?';
-                const placedName = it.placed !== undefined && it.placed >= 0
-                  ? buckets.publicSet.buckets[it.placed]?.name ?? '?'
-                  : '—';
-                const cls = it.status === 'correct'
-                  ? 'bg-emerald-500/15 border-emerald-400/40 text-emerald-200'
-                  : it.status === 'wrong'
-                    ? 'bg-rose-500/15 border-rose-400/40 text-rose-200'
-                    : 'bg-white/5 border-white/15 text-gray-300';
-                const icon = it.status === 'correct' ? '✓' : it.status === 'wrong' ? '✗' : '·';
-                const tooltip = it.status === 'correct'
-                  ? `Верно: ${correctName}`
-                  : it.status === 'wrong'
-                    ? `Положил в «${placedName}», нужно «${correctName}»`
-                    : `Не положил. Нужно «${correctName}»`;
-                return (
-                  <span
-                    key={it.idx}
-                    title={tooltip}
-                    className={`text-xs px-2 py-1 rounded-lg border ${cls}`}
-                  >
-                    <span className="mr-1 font-bold">{icon}</span>
-                    {it.text}
-                  </span>
-                );
-              })}
-            </div>
-          </div>
-        )}
+        <MyReview buckets={buckets} myId={myId} />
+        {footer}
+      </div>
+    </div>
+  );
+}
 
-        <div className="mt-4 text-xs text-gray-500">Следующий раунд через несколько секунд…</div>
+function FfaRoundResults({
+  gameState, buckets, myId, totalItems, myCorrect, footer,
+}: {
+  gameState: GameState; buckets: BucketsServerState; myId: string; totalItems: number; myCorrect: number; footer: ReactNode;
+}) {
+  const players = Object.values(gameState.players);
+  const ranked = ranking(players, buckets.scores);
+  const myRank = ranked.findIndex((p) => p.id === myId) + 1;
+  const myBonus = buckets.lastSpeedBonus?.[myId] ?? 0;
+  const myPoints = buckets.lastRoundPoints?.[myId] ?? myCorrect;
+  const myTotal = buckets.scores?.[myId] ?? 0;
+
+  return (
+    <div className="h-full overflow-y-auto p-4 sm:p-6">
+      <div className="glass-panel rounded-3xl p-5 sm:p-6 max-w-2xl mx-auto text-center animate-[fadeIn_0.4s_ease-out]" data-testid="buckets-results-ffa">
+        <div className="text-5xl mb-3 animate-[float_3s_ease-in-out_infinite]">{myRank === 1 ? '🥇' : myRank === 2 ? '🥈' : myRank === 3 ? '🥉' : '🎯'}</div>
+        <div className="text-xs uppercase tracking-wider text-gray-400 mb-1">Раунд {buckets.round} результаты</div>
+
+        <div className="grid grid-cols-3 gap-2 mt-4">
+          <div className="bg-white/5 rounded-2xl p-3">
+            <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-1">Верно</div>
+            <div className="text-2xl font-black text-emerald-300">{myCorrect}<span className="text-gray-500 text-base">/{totalItems}</span></div>
+          </div>
+          <div className="bg-white/5 rounded-2xl p-3">
+            <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-1">Скорость</div>
+            <div className={`text-2xl font-black ${myBonus > 0 ? 'text-cyan-300' : 'text-gray-500'}`}>+{myBonus}</div>
+          </div>
+          <div className="bg-[var(--color-dungeon-gold)]/10 border border-[var(--color-dungeon-gold)]/30 rounded-2xl p-3">
+            <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-1">За раунд</div>
+            <div className="text-2xl font-black text-[var(--color-dungeon-gold)]">+{myPoints}</div>
+          </div>
+        </div>
+
+        <div className="mt-3 text-sm text-gray-300">
+          У тебя <span className="font-black text-[var(--color-dungeon-gold)] tabular-nums">{myTotal}</span> очк. · {myRank}-е место из {ranked.length}
+        </div>
+
+        {/* Rating */}
+        <div className="mt-4 text-left">
+          <div className="text-xs uppercase tracking-wider text-gray-400 mb-2 text-center">Рейтинг</div>
+          <div className="flex flex-col gap-1.5">
+            {ranked.map((p, i) => {
+              const isMe = p.id === myId;
+              const pts = buckets.lastRoundPoints?.[p.id] ?? buckets.lastRoundScores?.[p.id] ?? 0;
+              return (
+                <div
+                  key={p.id}
+                  className={`flex items-center gap-2 px-3 py-1.5 rounded-xl border text-sm ${isMe ? 'bg-[var(--color-dungeon-gold)]/15 border-[var(--color-dungeon-gold)]/40' : 'bg-white/5 border-white/10'}`}
+                >
+                  <span className="w-6 text-center">{MEDALS[i] ?? `${i + 1}.`}</span>
+                  <span className="flex-1 truncate text-white">{p.isBot && !p.name.includes('🤖') ? '🤖 ' : ''}{p.name}</span>
+                  <span className="text-xs text-gray-400 tabular-nums">+{pts}</span>
+                  <span className={`font-black tabular-nums ${isMe ? 'text-[var(--color-dungeon-gold)]' : 'text-white'}`}>{buckets.scores?.[p.id] ?? 0}</span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        <MyReview buckets={buckets} myId={myId} />
+        {footer}
+      </div>
+    </div>
+  );
+}
+
+function TeamsRoundResults({
+  gameState, buckets, myId, totalItems, myCorrect, footer,
+}: {
+  gameState: GameState; buckets: BucketsServerState; myId: string; totalItems: number; myCorrect: number; footer: ReactNode;
+}) {
+  const teams: Team[] = gameState.teams ?? [];
+  const players = Object.values(gameState.players);
+  const myTeamId = gameState.players[myId]?.teamId;
+  const myTeam = teams.find((t) => t.id === myTeamId);
+  const roundRes = buckets.lastTeamRound ?? {};
+  const totals = buckets.teamScores ?? {};
+  const sorted = [...teams].filter((t) => players.some((p) => p.teamId === t.id)).sort((a, b) => (totals[b.id] ?? 0) - (totals[a.id] ?? 0));
+  const myRoundPts = myTeamId ? roundRes[myTeamId]?.points ?? 0 : 0;
+  const isAvg = buckets.teamScoring === 'avg';
+  const leader = sorted[0];
+
+  return (
+    <div className="h-full overflow-y-auto p-4 sm:p-6">
+      <div className="glass-panel rounded-3xl p-5 sm:p-6 max-w-2xl mx-auto text-center animate-[fadeIn_0.4s_ease-out]" data-testid="buckets-results-teams">
+        <div className="text-5xl mb-3 animate-[float_3s_ease-in-out_infinite]">{leader?.emoji ?? '⚔️'}</div>
+        <div className="text-xs uppercase tracking-wider text-gray-400 mb-1">Раунд {buckets.round} результаты</div>
+        {leader && <div className="text-sm font-bold" style={{ color: leader.color }}>Лидируют {leader.name}</div>}
+
+        <div className="grid grid-cols-2 gap-3 mt-4">
+          <div className="bg-white/5 rounded-2xl p-3">
+            <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-1">Ты верно</div>
+            <div className="text-2xl font-black text-emerald-300">{myCorrect}<span className="text-gray-500 text-base">/{totalItems}</span></div>
+          </div>
+          <div className="rounded-2xl p-3 border" style={{ backgroundColor: myTeam ? `${myTeam.color}1a` : undefined, borderColor: myTeam ? `${myTeam.color}66` : 'transparent' }}>
+            <div className="text-[10px] uppercase tracking-wider text-gray-500 mb-1">Твоя команда за раунд</div>
+            <div className="text-2xl font-black" style={{ color: myTeam?.color }}>+{myRoundPts}</div>
+          </div>
+        </div>
+
+        {/* Team table */}
+        <div className="mt-4 text-left">
+          <div className="text-xs uppercase tracking-wider text-gray-400 mb-2 text-center">Табло команд</div>
+          <div className="flex flex-col gap-1.5">
+            {sorted.map((t, i) => {
+              const r = roundRes[t.id];
+              const members = players.filter((p) => p.teamId === t.id);
+              return (
+                <div
+                  key={t.id}
+                  className="rounded-xl px-3 py-2 border"
+                  style={{ backgroundColor: `${t.color}14`, borderColor: t.id === myTeamId ? t.color : `${t.color}55` }}
+                >
+                  <div className="flex items-center gap-2">
+                    <span className="w-6 text-center text-sm">{MEDALS[i] ?? `${i + 1}.`}</span>
+                    <TeamBadge team={t} size="sm" />
+                    <span className="ml-auto text-xs text-gray-400 tabular-nums">
+                      {r ? `${r.correct}/${r.max} · +${r.points}` : ''}
+                    </span>
+                    <span className="font-black tabular-nums text-base" style={{ color: t.color }}>{totals[t.id] ?? 0}</span>
+                  </div>
+                  <div className="mt-1 flex flex-wrap gap-1 pl-8">
+                    {members.map((p) => (
+                      <span key={p.id} className={`text-[11px] px-1.5 py-0.5 rounded-md bg-black/30 ${p.id === myId ? 'text-[var(--color-dungeon-gold)]' : 'text-gray-300'}`}>
+                        {p.name} <span className="text-gray-500 tabular-nums">{buckets.lastRoundScores?.[p.id] ?? 0}</span>
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          <div className="mt-2 text-[10px] text-gray-500 text-center">
+            {isAvg
+              ? 'Команды неравные: очки = среднее верных на игрока × 10'
+              : 'Очки команды = сумма верных ответов её игроков'}
+          </div>
+        </div>
+
+        <MyReview buckets={buckets} myId={myId} />
+        {footer}
       </div>
     </div>
   );

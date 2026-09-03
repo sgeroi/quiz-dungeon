@@ -11,24 +11,40 @@ import FloorIntroPopup from '../components/FloorIntroPopup';
 import RecordButton from '../components/RecordButton';
 import RewardOverlay from '../components/RewardOverlay';
 import PerkButtons from '../components/PerkButtons';
+import ScoreStrip from '../components/ScoreStrip';
+import TeamBadge from '../components/TeamBadge';
+import { classicView } from '../components/classicTeams';
 
 export default function GameScreen() {
-  const { gameState, playerId, captainId, sacrificePlayerId, betPhase } = useStore();
+  const { gameState, playerId, captainId: storeCaptainId, sacrificePlayerId: storeSacrificeId } = useStore();
   if (!gameState || !playerId) return null;
 
   const me = gameState.players[playerId];
   const floor = gameState.floors[gameState.currentFloor - 1];
   const phase = gameState.phase;
-  const players = Object.values(gameState.players);
   const results = gameState.lastResults;
+
+  // Team-format view: own team's monster/captain/sacrifice in teams-mode, party otherwise.
+  const cv = classicView(gameState, playerId, storeCaptainId, storeSacrificeId);
+  const { captainId, sacrificeId } = cv;
 
   const params = floor?.params;
   const isCaptainMode = params?.whoAnswers === 'captain';
   const iAmCaptain = isCaptainMode && captainId === playerId;
   const captainPlayer = captainId ? gameState.players[captainId] : null;
   const isSacrifice = params?.whoAnswers === 'sacrifice';
-  const iAmSacrifice = isSacrifice && sacrificePlayerId === playerId;
-  const sacrificePlayer = sacrificePlayerId ? gameState.players[sacrificePlayerId] : null;
+  const iAmSacrifice = isSacrifice && sacrificeId === playerId;
+  const sacrificePlayer = sacrificeId ? gameState.players[sacrificeId] : null;
+  // Server truth for the bet overlay (stays up until every captain has bet in teams-mode).
+  const betPhase = !!gameState.betPhase;
+
+  // Round numbers to animate: own team's in teams-mode, party's otherwise.
+  const tb = cv.myBattle;
+  const dmgToMonster = cv.isTeams ? tb?.lastDamageDealt : results?.damageDealt;
+  const dmgToPlayers = cv.isTeams ? tb?.lastDamageTaken : results?.damageTaken;
+  const defeated = cv.isTeams ? tb?.lastDefeated : results?.monsterDefeated;
+  const partyIds = new Set(cv.party.map((p) => p.id));
+  const playersHit = results?.playersHit.filter((id) => partyIds.has(id));
 
   return (
     <div className="h-full flex flex-col p-3 max-w-xl mx-auto">
@@ -37,15 +53,19 @@ export default function GameScreen() {
 
       {/* Mode badge */}
       {floor && params && (
-        <div className="flex gap-2 justify-center mb-2">
+        <div className="flex gap-2 justify-center mb-2 flex-wrap">
           <span className="px-4 py-1.5 rounded-full text-sm font-bold glass-panel border-glow text-white">
             {params.emoji} {params.name}
           </span>
           {floor.isBoss && (
             <span className="px-3 py-1.5 rounded-full bg-red-900/40 border border-red-500/30 text-red-400 text-sm font-bold glow-red">💀 Босс</span>
           )}
+          {cv.myTeam && <TeamBadge team={cv.myTeam} size="sm" className="self-center" />}
         </div>
       )}
+
+      {/* Standings: team monsters + scores (teams) or personal score + top-3 (ffa) */}
+      <ScoreStrip gameState={gameState} playerId={playerId} />
 
       {/* Isolation overlay */}
       {params?.commsBlocked && phase === 'answering' && (
@@ -59,18 +79,20 @@ export default function GameScreen() {
       {/* Captain/sacrifice notices */}
       {isCaptainMode && !iAmCaptain && phase === 'answering' && (
         <div className="glass-panel-gold rounded-2xl px-4 py-3 mb-3 text-center">
-          <div className="text-amber-300 font-bold text-sm">👑 Отвечает капитан: {captainPlayer?.name}</div>
+          <div className="text-amber-300 font-bold text-sm">
+            👑 Отвечает капитан{cv.isTeams ? ' команды' : ''}: {captainPlayer?.name ?? '—'}
+          </div>
         </div>
       )}
       {iAmCaptain && phase === 'answering' && !betPhase && (
         <div className="glass-panel-gold rounded-2xl px-4 py-3 mb-3 text-center glow-gold">
-          <div className="text-amber-200 font-bold text-sm">👑 Вы — капитан!</div>
+          <div className="text-amber-200 font-bold text-sm">👑 Вы — капитан{cv.myTeam ? ` команды «${cv.myTeam.name}»` : ''}!</div>
         </div>
       )}
       {isSacrifice && sacrificePlayer && phase === 'answering' && (
         <div className={`glass-panel rounded-2xl px-4 py-3 mb-3 text-center ${iAmSacrifice ? 'border border-red-500/40 glow-red' : 'border border-red-600/20'}`}>
           <div className="text-red-300 font-bold text-sm">
-            💀 {iAmSacrifice ? 'Вы — жертва! Ошибка = смерть!' : `Жертва: ${sacrificePlayer.name}`}
+            💀 {iAmSacrifice ? 'Вы — жертва! Ошибка = смерть!' : `Жертва${cv.isTeams ? ' вашей команды' : ''}: ${sacrificePlayer.name}`}
           </div>
         </div>
       )}
@@ -88,20 +110,24 @@ export default function GameScreen() {
       )}
 
       {/* Battle scene */}
-      {(phase === 'answering' || phase === 'results' || phase === 'chain-turn') && floor && floor.monster && (
+      {(phase === 'answering' || phase === 'results' || phase === 'chain-turn') && floor && cv.monster && (
         <BattleScene
-          players={players}
-          monster={floor.monster}
-          damageToMonster={phase === 'results' ? results?.damageDealt : undefined}
-          damageToPlayers={phase === 'results' ? results?.damageTaken : undefined}
-          monsterDefeated={phase === 'results' ? results?.monsterDefeated : undefined}
-          playersHit={phase === 'results' ? results?.playersHit : undefined}
+          players={cv.party}
+          monster={cv.monster}
+          damageToMonster={phase === 'results' ? dmgToMonster : undefined}
+          damageToPlayers={phase === 'results' ? dmgToPlayers : undefined}
+          monsterDefeated={phase === 'results' ? defeated : undefined}
+          playersHit={phase === 'results' ? playersHit : undefined}
         />
       )}
 
       {/* Bet phase (shows alongside question) */}
       {betPhase && isCaptainMode && phase === 'answering' && (
-        <BetPhase iAmCaptain={iAmCaptain} captainName={captainPlayer?.name ?? '?'} />
+        <BetPhase
+          iAmCaptain={iAmCaptain}
+          captainName={captainPlayer?.name ?? '?'}
+          alreadyBet={me?.betAmount !== undefined}
+        />
       )}
 
       {/* Room content */}

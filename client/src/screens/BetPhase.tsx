@@ -3,10 +3,20 @@ import { useStore } from '../store';
 interface BetPhaseProps {
   iAmCaptain: boolean;
   captainName: string;
+  /** teams: this captain already bet, the overlay waits for other teams' captains. */
+  alreadyBet?: boolean;
 }
 
-export default function BetPhase({ iAmCaptain, captainName }: BetPhaseProps) {
+export default function BetPhase({ iAmCaptain, captainName, alreadyBet = false }: BetPhaseProps) {
   const { submitBet } = useStore();
+
+  if (iAmCaptain && alreadyBet) {
+    return (
+      <div className="glass-panel rounded-xl px-4 py-2 mb-3 text-center border border-amber-600/20 animate-pulse">
+        <span className="text-amber-300 text-sm">🎲 Ставка принята — ждём капитанов других команд...</span>
+      </div>
+    );
+  }
 
   if (iAmCaptain) {
     return (

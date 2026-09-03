@@ -2,15 +2,37 @@
 // Reads room-broadcast data only: gameState.millionaire (server snapshot; the
 // correct answer arrives as `revealCorrectIndex` only in the 'results' phase),
 // gameState.timer and players. No action buttons.
+//
+// Formats: coop — one pyramid + shared hints; ffa — compact pyramids/sums per
+// player; teams — pyramids per team. In ffa/teams the question is shared, the
+// picks of every contestant are shown only after the reveal.
 import { useMemo } from 'react';
 import { useStore } from '../../store';
 import { GAME_MODES } from '../../types';
-import type { GameState, Player } from '../../types';
+import type { GameState, Player, Team, TeamMode } from '../../types';
 import { PresenterTimer } from '../DefaultPresenter';
+import TeamBadge from '../../components/TeamBadge';
 
+interface HintsUsed { fifty: boolean; audience: boolean; friend: boolean; swap?: boolean }
+type ContestantStatus = 'playing' | 'out' | 'won';
+interface ContestantView {
+  id: string;
+  status: ContestantStatus;
+  hintsUsed: HintsUsed;
+  fiftyEliminated: number[];
+  audience: { percents: [number, number, number, number] } | null;
+  friend: { suggestionIndex: 0 | 1 | 2 | 3; text: string } | null;
+  answeredIds: string[];
+  votes: Record<string, number>;
+  answerIndex: number | null;
+  lastWasCorrect: boolean | null;
+  sum: number;
+  finalLevel: number;
+}
 interface MillionaireSnapshot {
+  teamMode?: TeamMode;
   level: number;
-  hintsUsed: { fifty: boolean; audience: boolean; friend: boolean; swap?: boolean };
+  hintsUsed: HintsUsed;
   fiftyEliminated: number[];
   audience: { percents: [number, number, number, number] } | null;
   friend: { suggestionIndex: 0 | 1 | 2 | 3; text: string } | null;
@@ -21,6 +43,10 @@ interface MillionaireSnapshot {
   finalSum: number;
   finalLevel: number;
   pyramid: number[];
+  contestants?: Record<string, ContestantView>;
+  scores?: Record<string, number>;
+  teamScores?: Record<string, number>;
+  playingCount?: number;
 }
 
 const FALLBACK_PYRAMID = [100, 500, 1_000, 5_000, 25_000, 100_000, 500_000, 1_000_000];
@@ -39,6 +65,14 @@ function getSnapshot(gs: GameState | null): MillionaireSnapshot | null {
   return m;
 }
 
+interface Row {
+  c: ContestantView;
+  name: string;
+  team?: Team;
+  player?: Player;
+  members: Player[];
+}
+
 export default function MillionairePresenter() {
   const gameState = useStore((s) => s.gameState);
   const m = getSnapshot(gameState);
@@ -47,21 +81,54 @@ export default function MillionairePresenter() {
 
   if (!gameState || !m) return <Preparing />;
 
+  const mode: TeamMode = m.teamMode ?? gameState.teamMode ?? 'coop';
   const showResult = gameState.phase === 'results';
   const correctIdx = showResult ? m.revealCorrectIndex : null;
-  const pickedIdx = m.lastAnswerIndex;
   const players = Object.values(gameState.players);
-  const answeredBy = players.find((p) => p.currentAnswer !== null && p.currentAnswer !== undefined) ?? null;
   const level = m.level;
   const currentPrize = pyramid[level - 1] ?? 0;
   const timerActive = !showResult && gameState.maxTimer > 0;
   const q = m.question;
 
+  // ---- contestant rows (ffa / teams) ----
+  const rows: Row[] = mode === 'coop' || !m.contestants
+    ? []
+    : Object.values(m.contestants)
+        .map((c) => {
+          const team = mode === 'teams' ? (gameState.teams ?? []).find((t) => t.id === c.id) : undefined;
+          const player = mode === 'ffa' ? gameState.players[c.id] : undefined;
+          const members = mode === 'teams' ? players.filter((p) => p.teamId === c.id) : player ? [player] : [];
+          return { c, team, player, members, name: team?.name ?? player?.name ?? c.id };
+        })
+        .sort((a, b) => b.c.sum - a.c.sum || (a.c.status === 'playing' ? -1 : 1));
+
+  // ---- coop-only fields ----
+  const coop = mode === 'coop';
+  const pickedIdx = coop ? m.lastAnswerIndex : null;
+  const answeredBy = coop
+    ? players.find((p) => p.currentAnswer !== null && p.currentAnswer !== undefined) ?? null
+    : null;
+
+  // Who picked which option — revealed only in 'results' (ffa/teams).
+  const pickers: Row[][] = [[], [], [], []];
+  if (showResult && !coop) {
+    for (const r of rows) {
+      if (r.c.status !== 'playing' && r.c.lastWasCorrect === null) continue;
+      if (r.c.answerIndex !== null && r.c.answerIndex >= 0 && r.c.answerIndex < 4) pickers[r.c.answerIndex].push(r);
+    }
+  }
+
+  const playingCount = m.playingCount ?? rows.filter((r) => r.c.status === 'playing').length;
+
   return (
     <div className="h-full flex gap-8 px-10 pb-8 pt-2 min-h-0">
-      {/* Pyramid */}
-      <aside className="w-[400px] shrink-0 flex flex-col gap-4 min-h-0">
-        <Pyramid pyramid={pyramid} currentLevel={level} />
+      {/* Left: pyramid (coop) or contestant board (ffa / teams) */}
+      <aside className={`${coop ? 'w-[400px]' : 'w-[520px]'} shrink-0 flex flex-col gap-4 min-h-0`}>
+        {coop ? (
+          <Pyramid pyramid={pyramid} currentLevel={level} />
+        ) : (
+          <Board rows={rows} mode={mode} pyramid={pyramid} level={level} showResult={showResult} />
+        )}
       </aside>
 
       {/* Studio */}
@@ -70,6 +137,8 @@ export default function MillionairePresenter() {
           <div className="min-w-0">
             <div className="text-[20px] font-bold uppercase tracking-widest text-[var(--color-dungeon-muted)]">
               {MODE_EMOJI} {MODE_NAME}
+              {mode === 'ffa' && <span className="text-white/50"> · Личный зачёт</span>}
+              {mode === 'teams' && <span className="text-white/50"> · Команда на команду</span>}
             </div>
             <div className="text-[40px] font-black leading-tight truncate">
               Вопрос {level} из {pyramid.length}
@@ -79,8 +148,10 @@ export default function MillionairePresenter() {
           <div className="shrink-0 min-h-[130px] flex items-center">
             {timerActive ? (
               <PresenterTimer timer={gameState.timer} maxTimer={gameState.maxTimer} />
-            ) : (
+            ) : coop ? (
               <ResultBadge m={m} prize={currentPrize} answeredBy={answeredBy} show={showResult} />
+            ) : (
+              <RoundBadge rows={rows} prize={currentPrize} show={showResult} />
             )}
           </div>
         </div>
@@ -102,42 +173,71 @@ export default function MillionairePresenter() {
               key={i}
               letter={LETTERS[i]}
               text={opt}
-              eliminated={m.fiftyEliminated.includes(i)}
+              eliminated={coop ? m.fiftyEliminated.includes(i) : false}
               picked={pickedIdx === i}
               correct={correctIdx !== null && correctIdx === i}
               wrong={correctIdx !== null && pickedIdx === i && correctIdx !== i}
-              friend={!showResult && m.friend?.suggestionIndex === i}
-              audiencePct={m.audience ? m.audience.percents[i] : null}
+              friend={coop && !showResult && m.friend?.suggestionIndex === i}
+              audiencePct={coop && m.audience ? m.audience.percents[i] : null}
+              pickers={pickers[i]}
+              mode={mode}
             />
           ))}
         </div>
 
-        {/* Hints + audience / friend */}
-        <div className="flex gap-5 flex-1 min-h-0">
-          <div className="glass-panel px-6 py-4 flex flex-col gap-3 w-[420px] shrink-0 self-start">
-            <div className="text-[18px] font-bold uppercase tracking-widest text-[var(--color-dungeon-muted)]">Подсказки</div>
-            <div className="grid grid-cols-4 gap-3">
-              <HintChip icon="50:50" label="50:50" used={m.hintsUsed.fifty} />
-              <HintChip icon="🏛️" label="Зал" used={m.hintsUsed.audience} />
-              <HintChip icon="📞" label="Друг" used={m.hintsUsed.friend} />
-              <HintChip icon="🔄" label="Замена" used={!!m.hintsUsed.swap} />
-            </div>
-          </div>
-
-          {m.audience ? (
-            <AudienceChart percents={m.audience.percents} eliminated={m.fiftyEliminated} />
-          ) : m.friend ? (
-            <div className="glass-panel px-8 py-5 flex items-center gap-6 flex-1 min-w-0 self-start border border-[var(--color-dungeon-heal)]/40">
-              <span className="text-[64px] leading-none">📞</span>
-              <div className="min-w-0">
-                <div className="text-[18px] font-bold uppercase tracking-widest text-[var(--color-dungeon-heal)]">Звонок другу</div>
-                <div className="text-[30px] font-extrabold leading-tight">«{m.friend.text}»</div>
+        {/* Bottom: hints + audience / friend (coop) or answering status (ffa / teams) */}
+        {coop ? (
+          <div className="flex gap-5 flex-1 min-h-0">
+            <div className="glass-panel px-6 py-4 flex flex-col gap-3 w-[420px] shrink-0 self-start">
+              <div className="text-[18px] font-bold uppercase tracking-widest text-[var(--color-dungeon-muted)]">Подсказки</div>
+              <div className="grid grid-cols-4 gap-3">
+                <HintChip icon="50:50" label="50:50" used={m.hintsUsed.fifty} />
+                <HintChip icon="🏛️" label="Зал" used={m.hintsUsed.audience} />
+                <HintChip icon="📞" label="Друг" used={m.hintsUsed.friend} />
+                <HintChip icon="🔄" label="Замена" used={!!m.hintsUsed.swap} />
               </div>
             </div>
-          ) : (
-            <PlayersStrip players={players} answeredBy={answeredBy} />
-          )}
-        </div>
+
+            {m.audience ? (
+              <AudienceChart percents={m.audience.percents} eliminated={m.fiftyEliminated} />
+            ) : m.friend ? (
+              <div className="glass-panel px-8 py-5 flex items-center gap-6 flex-1 min-w-0 self-start border border-[var(--color-dungeon-heal)]/40">
+                <span className="text-[64px] leading-none">📞</span>
+                <div className="min-w-0">
+                  <div className="text-[18px] font-bold uppercase tracking-widest text-[var(--color-dungeon-heal)]">Звонок другу</div>
+                  <div className="text-[30px] font-extrabold leading-tight">«{m.friend.text}»</div>
+                </div>
+              </div>
+            ) : (
+              <PlayersStrip players={players} answeredBy={answeredBy} />
+            )}
+          </div>
+        ) : (
+          <div className="glass-panel px-6 py-4 self-start flex items-center gap-6 w-full">
+            <div className="text-[18px] font-bold uppercase tracking-widest text-[var(--color-dungeon-muted)] shrink-0">
+              {showResult ? 'Итог раунда' : 'Отвечают'}
+            </div>
+            <div className="flex flex-wrap gap-3 min-w-0">
+              {rows.filter((r) => r.c.status === 'playing' || (showResult && r.c.lastWasCorrect !== null)).map((r) => {
+                const answered = r.c.answeredIds.length;
+                const total = r.members.length;
+                const done = showResult
+                  ? r.c.lastWasCorrect ? '✓' : r.c.answerIndex === null ? '⏱' : '✗'
+                  : mode === 'teams' ? `${answered}/${total}` : answered > 0 ? '✓' : '…';
+                const tone = showResult
+                  ? r.c.lastWasCorrect ? 'border-[var(--color-dungeon-heal)] text-[var(--color-dungeon-heal)]' : 'border-[#FF4848] text-[#FF8A8A]'
+                  : answered > 0 && answered >= total ? 'border-[var(--color-dungeon-gold)] text-[var(--color-dungeon-gold)]' : 'border-white/15';
+                return (
+                  <span key={r.c.id} className={`rounded-full border-2 px-5 py-2 text-[24px] font-extrabold flex items-center gap-3 ${tone}`}>
+                    {r.team ? <TeamBadge team={r.team} size="md" /> : <span>{r.player?.isBot ? '🤖 ' : ''}{r.name}</span>}
+                    <span className="tabular-nums">{done}</span>
+                  </span>
+                );
+              })}
+              {playingCount === 0 && <span className="text-[24px] text-white/60">Все закончили игру</span>}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -186,6 +286,97 @@ function Pyramid({ pyramid, currentLevel }: { pyramid: number[]; currentLevel: n
   );
 }
 
+/** ffa / teams: one compact pyramid (segment bar) per contestant with the sum and hints. */
+function Board({
+  rows,
+  mode,
+  pyramid,
+  level,
+  showResult,
+}: {
+  rows: Row[];
+  mode: TeamMode;
+  pyramid: number[];
+  level: number;
+  showResult: boolean;
+}) {
+  const compact = rows.length > 6;
+  return (
+    <div className="glass-panel p-4 flex-1 min-h-0 flex flex-col gap-2 overflow-hidden">
+      <div className="text-[18px] font-bold uppercase tracking-widest text-[var(--color-dungeon-muted)] px-2">
+        {mode === 'teams' ? 'Пирамиды команд' : 'Пирамиды игроков'}
+      </div>
+      <div className="flex-1 min-h-0 flex flex-col justify-start gap-2 overflow-hidden">
+        {rows.map((r) => {
+          const c = r.c;
+          // Level the contestant stands on: room level while playing, the level it stopped at otherwise.
+          const cur = c.status === 'playing' ? level : c.finalLevel + 1;
+          const color = r.team?.color ?? 'var(--color-dungeon-gold)';
+          const outcome = showResult && c.status === 'playing' && c.lastWasCorrect !== null
+            ? c.lastWasCorrect ? '✓' : '✗'
+            : c.status === 'won' ? '🏆' : c.status === 'out' ? '✗' : '';
+          const tone = c.status === 'out' ? 'opacity-50' : '';
+          return (
+            <div
+              key={c.id}
+              className={`rounded-2xl border px-4 ${compact ? 'py-1.5' : 'py-2.5'} flex flex-col gap-1.5 ${tone}`}
+              style={{ borderColor: `${r.team?.color ?? '#FFDB10'}66`, background: 'rgba(255,255,255,0.03)' }}
+            >
+              <div className="flex items-center gap-3 min-w-0">
+                {r.team ? (
+                  <TeamBadge team={r.team} size={compact ? 'md' : 'lg'} />
+                ) : (
+                  <span className={`${compact ? 'text-[22px]' : 'text-[26px]'} font-extrabold truncate`}>{r.player?.isBot ? '🤖 ' : ''}{r.name}</span>
+                )}
+                {r.team && !compact && (
+                  <span className="text-[16px] text-white/60 truncate">{r.members.map((p) => p.name).join(', ')}</span>
+                )}
+                <span className="ml-auto flex items-center gap-3 shrink-0">
+                  <span className="flex gap-1 text-[14px]">
+                    <Hint used={c.hintsUsed.fifty} label="50:50" />
+                    <Hint used={c.hintsUsed.audience} label="🏛️" />
+                    <Hint used={c.hintsUsed.friend} label="📞" />
+                  </span>
+                  <span className={`${compact ? 'text-[22px]' : 'text-[28px]'} font-black tabular-nums`} style={{ color }}>{formatRub(c.sum)}</span>
+                  <span className={`w-[36px] text-right ${compact ? 'text-[20px]' : 'text-[26px]'} ${outcome === '✗' ? 'text-[#FF8A8A]' : 'text-[var(--color-dungeon-heal)]'}`}>{outcome}</span>
+                </span>
+              </div>
+              {/* mini pyramid */}
+              <div className="flex gap-1">
+                {pyramid.map((amount, idx) => {
+                  const lv = idx + 1;
+                  const cleared = lv < cur;
+                  const current = lv === cur && c.status === 'playing';
+                  const safe = SAFE_LEVELS.includes(lv);
+                  let bg = 'rgba(255,255,255,0.10)';
+                  if (cleared) bg = 'var(--color-dungeon-heal)';
+                  if (current) bg = color;
+                  return (
+                    <div
+                      key={lv}
+                      title={formatRub(amount)}
+                      className={`flex-1 ${compact ? 'h-[10px]' : 'h-[14px]'} rounded-sm ${current ? 'animate-pulse' : ''}`}
+                      style={{ background: bg, outline: safe ? '2px solid rgba(255,219,16,0.6)' : undefined, outlineOffset: '-2px' }}
+                    />
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function Hint({ used, label }: { used: boolean; label: string }) {
+  return (
+    <span className={`rounded-md border px-1.5 py-0.5 font-bold ${used ? 'border-white/10 text-white/25 line-through' : 'border-[var(--color-dungeon-gold)]/50 text-[var(--color-dungeon-gold)]'}`}>
+      {label}
+    </span>
+  );
+}
+
 function OptionPill({
   letter,
   text,
@@ -195,6 +386,8 @@ function OptionPill({
   wrong,
   friend,
   audiencePct,
+  pickers,
+  mode,
 }: {
   letter: string;
   text: string;
@@ -204,6 +397,8 @@ function OptionPill({
   wrong: boolean;
   friend: boolean;
   audiencePct: number | null;
+  pickers: Row[];
+  mode: TeamMode;
 }) {
   let box = 'bg-[var(--color-dungeon-surface)] border-[var(--color-dungeon-gold)]/60';
   let letterCls = 'text-[var(--color-dungeon-gold)]';
@@ -235,6 +430,19 @@ function OptionPill({
         {friend && !eliminated && <span className="text-[28px]">📞</span>}
         {audiencePct !== null && !eliminated && (
           <span className="text-[26px] font-black tabular-nums text-[var(--color-dungeon-mana)]">{audiencePct}%</span>
+        )}
+        {pickers.length > 0 && (
+          <span className="flex flex-wrap gap-1.5 justify-end max-w-[45%]">
+            {pickers.map((r) =>
+              r.team ? (
+                <TeamBadge key={r.c.id} team={r.team} size="sm" iconOnly={mode === 'teams' && pickers.length > 2} />
+              ) : (
+                <span key={r.c.id} className="rounded-full bg-black/40 border border-white/20 px-2.5 py-0.5 text-[16px] font-bold text-white/90">
+                  {r.name}
+                </span>
+              ),
+            )}
+          </span>
         )}
       </div>
     </div>
@@ -310,6 +518,29 @@ function ResultBadge({
       <div className="text-[22px] font-bold text-white/70">
         {answeredBy ? `Ответил: ${answeredBy.name}` : ok ? 'Идём дальше' : 'Игра окончена'}
       </div>
+    </div>
+  );
+}
+
+/** ffa / teams round summary: how many contestants passed. */
+function RoundBadge({ rows, prize, show }: { rows: Row[]; prize: number; show: boolean }) {
+  if (!show) return null;
+  const played = rows.filter((r) => r.c.lastWasCorrect !== null);
+  const ok = played.filter((r) => r.c.lastWasCorrect).length;
+  const positive = ok > 0;
+  return (
+    <div
+      className={`rounded-3xl border-2 px-8 py-4 text-right ${
+        positive
+          ? 'bg-[var(--color-dungeon-heal)]/15 border-[var(--color-dungeon-heal)] text-[var(--color-dungeon-heal)]'
+          : 'bg-[#FF4848]/15 border-[#FF4848] text-[#FF8A8A]'
+      }`}
+      style={{ animation: 'fadeIn 0.4s ease-out' }}
+    >
+      <div className="text-[40px] font-black leading-tight">
+        {positive ? `✓ Верно: ${ok} из ${played.length}` : '✗ Никто не ответил верно'}
+      </div>
+      <div className="text-[22px] font-bold text-white/70">{positive ? `${formatRub(prize)} — идём дальше` : 'Все выбыли'}</div>
     </div>
   );
 }
